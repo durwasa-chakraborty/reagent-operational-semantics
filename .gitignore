@@ -1,0 +1,17 @@
+# Lean / Lake build output
+/.lake/
+*.olean
+*.ilean
+
+# LaTeX build artifacts
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.fls
+docs/*.fdb_latexmk
+docs/*.synctex.gz
+docs/.ltximg/
+docs/.auctex-auto/
+
+# Editor/OS cruft
+.DS_Store

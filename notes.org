@@ -1,0 +1,8 @@
+#+title: Notes
+
+* Abstract Syntax Tree
+The language has a very minimal syntax which is at section 1. abstract syntax
+* Operational Semantics
+For operational semantics we have @five rules. in figure 1 of the tex file.
+* NOTE just based on these rules I want you to design a lean project and create a scaffolding around it so that we can write interesting proofs around it.
+* Notice that the operational semantics like the $\lambda$  which is currently a $\bot$ and $TransactionId$ and can tomorrow be $ThreadId$ so the lean code but the code should be extremely simple to read. simplicity over everything.

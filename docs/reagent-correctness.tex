@@ -1,0 +1,659 @@
+\documentclass[manuscript,nonacm]{acmart}
+
+%% acmart already provides amsmath, amssymb, amsthm, booktabs, xcolor, hyperref, graphicx.
+\usepackage{mathtools}
+\usepackage{stmaryrd}      % \llbracket, \rrbracket
+\usepackage{mathpartir}    % \inferrule for SOS rules
+\usepackage{listings}
+\usepackage{tikz}
+\usetikzlibrary{fit,positioning,arrows.meta}
+%% acmart predefines 'definition'; it does not define 'remark', so we add it.
+\theoremstyle{acmdefinition}
+\newtheorem{remark}{Remark}
+
+%% ---- notation ----
+\newcommand{\Loc}{\mathit{Loc}}
+\newcommand{\Var}{\mathit{Var}}
+\newcommand{\Val}{\mathit{Val}}
+\newcommand{\Tid}{\mathit{Tid}}
+\newcommand{\ThId}{\mathit{ThId}}   % thread identifiers (the scheduled thread i)
+\newcommand{\TrId}{\mathit{TxId}}   % transaction identifiers (the live transaction t)
+\newcommand{\Cmd}{\mathit{Cmd}}
+\newcommand{\Expr}{\mathit{Expr}}
+\newcommand{\store}{\sigma}
+\renewcommand{\log}{\lambda}
+\newcommand{\reduces}{\longrightarrow}
+\newcommand{\tred}{\mathrel{\longrightarrow_{t}}}
+\newcommand{\unit}{()}
+\newcommand{\bbegin}{\textsf{begin}}
+\newcommand{\eend}{\textsf{end}}
+\newcommand{\retry}{\textsf{retry}}
+\newcommand{\fork}{\textsf{fork}}
+\newcommand{\getc}[1]{\textsf{get}\;(#1)}
+\newcommand{\setc}[2]{\textsf{set}\,(#1,#2)}
+\newcommand{\nin}{\bot}                 % "no transaction" marker
+\newcommand{\subst}[3]{#1[#2\mapsto #3]}
+\newcommand{\rulename}[1]{\textsc{\small #1}}
+
+%% ---- evaluation-context notation ----
+
+\newcommand{\ectx}{\mathsf{ECtx}}
+\newcommand{\ehole}[1]{\ectx[[\, #1 \,]]}
+%% runtime get/set actions: they record the value read/written and the
+%% transaction token t, written get(l,v)@t and set(l,v)@t.
+\newcommand{\getev}[3]{\textsf{get}(#1,#2)\,@\,#3}
+\newcommand{\setev}[3]{\textsf{set}(#1,#2)\,@\,#3}
+\newcommand{\elided}{\mathrm{actions}}
+
+%% ---- abbreviations used in the worked-examples section ----
+\newcommand{\st}[1]{[\,l\,{\mapsto}\,#1\,]}          % store over the single location l
+\newcommand{\emap}[1]{\{#1\}}                          % thread map E
+\newcommand{\adm}{\xrightarrow{\;\mathrm{adm}\;}}     % administrative reduction step
+\newcommand{\Abody}{\textsf{let}\;x\,{=}\,\getc{l}\;\textsf{in}\;\setc{l}{x\,{+}\,1}}
+\newcommand{\Bbody}{\textsf{let}\;y\,{=}\,\getc{l}\;\textsf{in}\;
+   (\textsf{if}\;y\,\texttt{==}\,0\;\textsf{then}\;(\setc{l}{99}\,;\,\retry)\;
+   \textsf{else}\;\setc{l}{y\,{+}\,1})}
+
+%% ---- declarative-semantics notation (Cerone et al. style) ----
+\newcommand{\Op}{\mathit{Op}}
+\newcommand{\EventId}{\mathit{EventId}}
+\newcommand{\HEvent}{\mathit{HEvent}}
+\newcommand{\WEvent}{\mathit{WEvent}}
+\newcommand{\REvent}{\mathit{REvent}}
+\newcommand{\rdev}[2]{\mathsf{read}(#1,#2)}
+\newcommand{\wrev}[2]{\mathsf{write}(#1,#2)}
+\newcommand{\retryev}{\rho}                 % retry event marker
+\newcommand{\po}{\mathit{po}}
+\newcommand{\maxpo}{\mathrm{max}_{\po}}
+\newcommand{\att}{\mathit{att}}
+\newcommand{\anyop}[2]{\mathord{\_}(#1,#2)} % read(x,n) or write(x,n)
+\newcommand{\pob}{\xrightarrow{\po}}        % program-order edge
+
+%% ---- listings style for the Reagent language ----
+\definecolor{kw}{rgb}{0.10,0.10,0.55}
+\definecolor{cm}{rgb}{0.30,0.45,0.30}
+\lstdefinelanguage{reagent}{
+  keywords={let,in,get,set,begin,end,retry,if,then,else},
+  sensitive=true,
+  morecomment=[l]{//},
+  morecomment=[n]{(*}{*)},
+  morestring=[b]",
+}
+\lstset{
+  language=reagent,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{kw}\bfseries,
+  commentstyle=\color{cm}\itshape,
+  showstringspaces=false,
+  columns=fullflexible,
+  frame=single,
+  framesep=4pt,
+  xleftmargin=4pt,
+}
+\newcommand{\code}[1]{\lstinline[basicstyle=\ttfamily]{#1}}
+
+\title{The Reagent Language}
+
+\author{Durwasa Chakraborty}
+\email{durwasa.chakraborty@gmail.com}
+\affiliation{%
+  \institution{TODO: institution}
+  \country{India}
+}
+
+\keywords{concurrency, transactional memory, operational semantics, internal consistency}
+
+\begin{document}
+
+\begin{abstract}
+TODO
+\end{abstract}
+
+\maketitle
+
+\section{Abstract syntax}
+
+\[
+\begin{array}{rcll}
+n     & \in & \mathbb{N}        & \text{natural-number literals}\\
+l     & \in & \Loc              & \text{shared mutable locations}\\
+x     & \in & \Var              & \text{immutable, let-bound variables}\\[4pt]
+v     & ::= & n \mid \unit \mid \textsf{true} \mid \textsf{false} & \text{values (naturals, unit, booleans)}\\[4pt]
+c     & ::= & \getc{l}          & \text{read a shared location}\\
+      & \mid & \setc{l}{e}      & \text{write a shared location}\\
+      & \mid & \bbegin          & \text{open a transaction}\\
+      & \mid & \eend            & \text{commit the current transaction}\\
+      & \mid & \retry           & \text{abort and restart the transaction}\\[4pt]
+e     & ::= & v \mid x          & \text{values, variables}\\
+      & \mid & e_1 + e_2        & \text{addition (the whiteboard's }\oplus\text{)}\\
+      & \mid & \textsf{let}\;x = e_1\;\textsf{in}\;e_2 & \text{binding}\\
+      & \mid & c                & \text{a command (and not a control-flow)}\\
+      & \mid & \textsf{if}\;e\;\textsf{then}\;e\;\textsf{else}\;e & \text{conditional}\\
+\end{array}
+\]
+
+
+
+\subsection{Semantics :: of the Reagent Language}
+\label{subsec:semantics}
+
+Each configuration $C$ in $\Phi$ represents the global state of the program at a particular point during execution. Thread identifiers form a fixed finite set $\ThId \subseteq \mathbb{N}$, and transaction identifiers a set $\TrId = \{t_1, t_2, \dots\}$. Formally, a configuration is a six-tuple $C = \langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle$, where:
+
+\begin{itemize}
+
+\item \(\sigma : \Loc \rightarrow \mathbb{N}\) maps each shared memory location to its current value.
+
+\item \(\lambda \in \ThId \cup \{\bot\}\) records the \emph{thread} that currently holds the lock. $\lambda = i$ means thread $i$ owns the live transaction and is the only thread permitted to take a transactional step; $\lambda = \bot$ means no thread is active.
+
+\item \(\theta \in \TrId \cup \{\bot\}\) is the identifier of the live transaction, minted \emph{fresh} by each $\bbegin$; $\theta = \bot$ means no transaction is active. It supplies the tag on the emitted actions --- when $\theta = t$ the labels read $\getev{l}{v}{t}$, $\eend\,@\,t$, and so on.
+
+\item $E : \ThId \rightarrow \Expr$ maps each thread to the expression it is currently evaluating. Since $dom(E)$ is fixed (Section~\ref{sec:init-final}), $E$ is a total map.
+
+\item $\hat{\sigma}: \Loc \rightarrow \mathbb{N}$ is the snapshot of the store taken when the live transaction began, used to roll the store back on restart.
+
+\item $\hat{E} \in \Expr$ is the expression from which execution resumes when a retry is encountered.
+
+\end{itemize}
+
+The snapshot $\hat{\sigma}$ and saved body $\hat{E}$ matter only inside a transaction, but we do not tag them with ``$\lambda \neq \bot$'' each time: an initial configuration already gives them values (Section~\ref{sec:init-final}) --- a run starts with $\lambda = \theta = \bot$ (no thread, no transaction) and $\hat{\sigma} = \sigma_0$, $\hat{E} = ()$ --- and every rule keeps them defined thereafter.
+
+In every rule the \emph{active} thread is $i$ (the one taking the step) with
+$E(i)=\ehole{r}$, where $r$ is the unique redex its evaluation context $\ectx$
+locates (the subterm currently able to step). There is no scheduler: the
+nondeterminism is inherent in $\rightarrow$, and any thread with an enabled redex
+may be the one that steps. Every transactional rule
+($\textsc{Get},\textsc{Set},\textsc{End},\textsc{Retry}$) carries the premise
+$\lambda = i$: \emph{only the thread that owns the live transaction may step inside
+it}. The conclusion rewrites that redex in place and \emph{frames} the rest of the
+table, $E' = E[i \mapsto \ehole{\cdot}]$ with $E'(j) = E(j)$ for every $j \neq i$;
+the label above the arrow is tagged with the live transaction id $\theta$ (the third
+component of the configuration).
+\begin{figure}[ht]
+\small
+\begin{mathpar}
+\inferrule*[left=\textsc{Get}]{
+  E(i)=\ehole{\getc{l}} \\ \lambda = i \\ \sigma(l)=v
+}{
+  \langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle
+  \xrightarrow{\getev{l}{v}{\theta}}
+  \langle\sigma,\lambda,\theta,E[i\mapsto\ehole{v}],\hat{\sigma},\hat{E}\rangle
+}
+\and
+\inferrule*[left=\textsc{Set}]{
+  E(i)=\ehole{\setc{l}{v}} \\ \lambda = i
+}{
+  \langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle
+  \xrightarrow{\setev{l}{v}{\theta}}
+  \langle\sigma[l\mapsto v],\lambda,\theta,E[i\mapsto\ehole{\unit}],\hat{\sigma},\hat{E}\rangle
+}
+\and
+\inferrule*[left=\textsc{Begin}]{
+  E(i)=\ehole{\bbegin\,;\,e}
+  \\
+  \lambda=\bot
+  \\
+  \theta\ \text{fresh}
+}{
+  \langle\sigma,\bot,\bot,E,\hat{\sigma},\hat{E}\rangle
+  \xrightarrow{\bbegin\,@\,\theta}
+  \langle
+    \sigma,
+    i,
+    \theta,
+    E[i\mapsto\ehole{\unit}],
+    \sigma,
+    e
+  \rangle
+}
+\and
+\inferrule*[left=\textsc{End}]{
+  E(i)=\ehole{\eend} \\ \lambda = i
+}{
+  \langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle
+  \xrightarrow{\eend\,@\,\theta}
+  \langle\sigma,\bot,\bot,E[i\mapsto\ehole{\unit}],\hat{\sigma},\hat{E}\rangle
+}
+\and
+\inferrule*[left=\textsc{Retry}]{
+  E(i)=\ehole{\retry} \\ \lambda = i
+}{
+  \langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle
+  \xrightarrow{\retry\,@\,\theta}
+  \langle
+    \hat{\sigma},
+    \bot,
+    \bot,
+    E[i\mapsto\ehole{\bbegin\,;\,\hat{E}}],
+    \hat{\sigma},
+    \hat{E}
+  \rangle
+}
+\end{mathpar}
+\caption{Semantics of Reagent commands. Each rule fires on the redex of the
+active thread $i$; the transactional rules require $\lambda = i$ (only the
+owner thread may step), and the emitted label is tagged with the live transaction
+id $\theta$. Unlisted six-tuple fields are unchanged.}
+\label{fig:semantics}
+\end{figure}
+Figure~\ref{fig:semantics} gives a formal description of the transition
+rules. $\textrm{\sc{Get}}$ reads the value stored at a shared location
+$l$. If the active thread $i$ owns the live transaction ($\lambda = i$) and $\sigma(l)=v$, then $\getc{l}$ returns the value $v$; the emitted action $\getev{l}{v}{\theta}$ records both the value $v$ read and the id $\theta$ of the live transaction. The store and transaction state remain unchanged.
+
+$\textrm{\sc{Set}}$ updates a shared location. When the owner thread $i$ (with $\lambda = i$) executes
+$\setc{l}{v}$, the value stored at location $l$ is updated to $v$ and the
+command returns the unit value $\unit$; the emitted action $\setev{l}{v}{\theta}$ records the written value $v$ and the transaction id $\theta$.
+
+$\textrm{\sc{Begin}}$ starts a transaction. No transaction may currently be alive ($\lambda = \bot$); transactions are therefore mutually exclusive, with at most one live transaction across all threads at any time. $\textrm{\sc{Begin}}$ mints a \emph{fresh} transaction id $\theta$ (the new live id), records the executing thread as the owner by setting $\lambda := i$, and saves the current store and continuation in $\hat{\sigma}$ and $\hat{E}$ respectively.
+
+$\textsc{End}$ commits the current transaction, resetting both the owner $\lambda$ and the live transaction id $\theta$ to $\bot$. The store is unchanged.
+
+
+$\textsc{Retry}$ is retrying with \emph{lock-releasing}. Instead of keeping the thread inside the transaction and spinning, it (i) rolls the store back to the snapshot $\hat{\sigma}$, so the abandoned attempt has no effect; (ii) sets $\lambda=\bot$ and clears the live transaction id, \emph{releasing the single critical section} so that another thread may now $\bbegin$ and run; and (iii) re-arms $E(i)$'s expression as $\bbegin\,;\,\hat{E}$, so that when $i$ next steps it must re-acquire the lock through $\textsc{Begin}$ before re-running the saved body.
+
+Because every transactional rule requires $\lambda = i$, a thread can only read, write, commit, or retry inside a transaction it opened itself. A $\getc{l}$, $\setc{l}{e}$, $\eend$, or $\retry$ reached with $\lambda \neq i$ --- in particular one with no matching enclosing $\bbegin$ --- has no rule to fire, so the run gets stuck rather than taking an ill-formed step. Well-formedness is thus enforced by the operational semantics itself, not assumed (Section~\ref{sec:examples}).
+
+\subsection{Evaluation contexts}
+
+An evaluation context $\ectx$ is an expression containing a single
+hole $[\cdot]$ that marks exactly where the next reduction step occurs. We give
+the evaluation context its own metavariable $\ectx$ precisely to keep it
+separate from $E$, which represents a mapping from thread identifiers
+($\mathit{Tid}$) to expressions ($\mathit{Expr}$); the two are distinct objects
+and should not be conflated.
+\[
+\ectx \;::=\; [\cdot]
+\;\mid\; \ectx\,;\,e
+\;\mid\; \textsf{let}\;x = \ectx\;\textsf{in}\;e
+\;\mid\; \ectx + e \;\mid\; v + \ectx
+\;\mid\; \ectx == e \;\mid\; v == \ectx
+\;\mid\; \textsf{if}\;\ectx\;\textsf{then}\;e\;\textsf{else}\;e
+\;\mid\; \setc{l}{\ectx}.
+\]
+We write $\ehole{e}$ for the expression obtained by plugging $e$ into the hole. Thus
+$E(t)=\ehole{\bbegin}$ asserts that the redex thread $t$ is about to execute is
+$\bbegin$, sitting inside the surrounding continuation $\ectx$.
+
+\subsection{The command rules in context form}
+
+Every command rule now fires on its redex inside an arbitrary context $\ectx$,
+preserving the continuation. The configuration is the six-tuple
+$\langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle$ of
+Section~\ref{subsec:semantics}.
+
+\begin{itemize}
+\item $E(i)=\ehole{\bbegin}$ and $E'=E[i\mapsto \ehole{\unit}]$: the $\bbegin$ reduces to
+$\unit$ \emph{in place}, leaving the continuation $\ectx$.
+\item $\hat{E}'=\ehole{\unit}$: the saved resume point is $\ehole{\unit}$,
+the body \emph{after} $\bbegin$, which is precisely what $\textsc{Retry}$
+reinstates.
+\end{itemize}
+\textsc{Retry} rolls the store back to
+the snapshot $\hat{\sigma}$, releases the lock ($\lambda = \bot$), and
+re-arms $E(i)$ as $\bbegin\,;\,\hat{E}$ so that the thread must re-acquire the
+lock through $\textsc{Begin}$ before re-running.
+
+\subsection{Administrative reductions}
+
+
+\[
+\begin{aligned}
+\ehole{\textsf{let}\;x = v\;\textsf{in}\;e} &\;\reduces\; \ehole{\subst{e}{x}{v}} &
+\ehole{\unit \,;\, e} &\;\reduces\; \ehole{e} \\
+\ehole{n_1 + n_2} &\;\reduces\; \ehole{n} \quad (n = n_1 + n_2) &
+\ehole{\textsf{if}\;\textsf{true}\;\textsf{then}\;e_1\;\textsf{else}\;e_2}
+   &\;\reduces\; \ehole{e_1} \\
+\end{aligned}
+\]
+Here the notation is substitution $\subst{e}{x}{v}$ in the \textsf{let}
+rather than map update.
+
+
+
+
+%% =====================================================================
+\section{Initial configuration and termination}
+\label{sec:init-final}
+
+The transition system $\mathcal{S}=(\Phi,\rightarrow)$ has an \emph{infinite}
+state space: a configuration $\langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle$
+ranges over all stores, all thread maps, all snapshots, and all saved bodies, and
+there are infinitely many of each. A program does not fix a single starting point;
+it determines a \emph{set} of initial configurations, and a run may begin from any
+one of them.
+
+\subsection{Initial configurations}
+
+The set of \emph{initial configurations} is
+\[
+\mathcal{I} \;=\;
+\bigl\{\, \langle\, \sigma_0,\ \bot,\ \bot,\ E_0,\ \sigma_0,\ \unit \,\rangle
+\;:\; \sigma_0, E_0 \text{ meet the conditions below} \,\bigr\}
+\;\subseteq\; \Phi ,
+\]
+and a run may start from any $C_0 \in \mathcal{I}$.
+\begin{itemize}
+\item \emph{Locations are fixed and finite.} $\Loc$ is a fixed finite set and
+$\sigma_0 : \Loc \rightarrow \mathbb{N}$ is any initial store: $\forall l \in \Loc.\
+\sigma_0(l) = n$ for some $n \in \mathbb{N}$. So $\mathcal{I}$ varies with $\sigma_0$.
+\item \emph{Threads are fixed and finite.} $dom(E_0) = \ThId$ is a fixed finite set
+of thread identifiers, and $E_0 : \ThId \rightarrow \Expr$ is the initial program,
+mapping each thread to its starting expression. No thread is ever created or
+destroyed, so $dom(E) = \ThId$ at every configuration.
+\item \emph{Every thread starts with a real program.} $E_0(i) \neq \unit$ for each
+$i \in \ThId$: a thread already at the unit value is finished and cannot step, so an
+initial configuration must give every thread an unreduced expression for the system
+to make progress.
+\item \emph{Nothing is live yet.} $\lambda = \bot$ (no thread owns the lock) and
+$\theta = \bot$ (no transaction is live), since before any $\bbegin$ no thread is in
+a transaction. The snapshot and saved body are given values here,
+$\hat{\sigma}_0 = \sigma_0$ and $\hat{E}_0 = \unit$, so the configuration is fully
+defined from the outset.
+\end{itemize}
+
+Fixing any $C_0 \in \mathcal{I}$, the configurations that matter are those
+reachable from it,
+\[
+\mathrm{Reach}(C_0) \;=\; \{\, C \;:\; C_0 \rightarrow^{*} C \,\},
+\]
+where $\rightarrow^{*}$ is the reflexive--transitive closure of $\rightarrow$.
+There is no scheduler: the nondeterminism of $\rightarrow$ is inherent, and at each
+configuration \emph{any} thread whose redex is enabled may take the next step.
+These reachable step sequences are the program's \emph{executions}.
+
+
+\subsection{Termination}
+
+We do not define a ``final'' or ``terminal'' configuration; the transition
+relation has no distinguished stopping states. We instead \emph{assume} that a run
+halts after finitely many steps, and record the condition under which it has run
+to completion: every thread has reduced to the unit value,
+\[
+E(i) = \unit \qquad \forall i \in dom(E).
+\]
+
+Here $\unit$ is the unit \emph{value} of the abstract syntax, so this is a
+pointwise statement $E(i)=\unit$; writing $E : \ThId \rightharpoonup \{\unit\}$
+would be a category error, since the grammar produces values, not sets.
+
+
+
+%% =====================================================================
+\section{Worked example: well-formedness is structural}
+\label{sec:examples}
+
+Because $\lambda$ now names the \emph{owner thread} and every transactional rule
+carries the premise $\lambda = i$, a thread can take a transactional step only
+inside a transaction it has itself opened. Call a program \emph{well-formed} when
+every $\getc{l}$, $\setc{l}{e}$, $\eend$, or $\retry$ it reaches sits inside a
+matching enclosing $\bbegin\dots\eend$. The point of this section is that
+well-formedness is \emph{structural}: an ill-formed redex simply has no rule to
+fire, so the run gets stuck rather than performing the action. We never need
+well-formedness as a separate side condition.
+
+\paragraph{Conventions.}
+There is a single shared location $l$; we write $\st{n}$ for the store with
+$\sigma(l)=n$. The configuration is the six-tuple
+$\langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle$ of
+Section~\ref{subsec:semantics}, with $\lambda$ the owner thread and $\theta$ the live
+transaction id. Thread identifiers are $1,2\in\ThId$; $E$ is shown as a map
+$\emap{1{:}e_1,\,2{:}e_2}$. Every run starts from
+$C_0=\langle \st{0},\ \bot,\ \bot,\ E_0,\ \st{0},\ \unit\rangle$.
+
+\subsection{An ill-formed \texttt{get} cannot fire}
+
+Let thread $1$ run the ill-formed program $P \equiv \getc{l}$ --- a read with no
+enclosing $\bbegin$. The initial configuration is
+\[
+C_0 \;=\; \langle \st{0},\ \bot,\ \bot,\ \emap{1{:}\getc{l}},\ \st{0},\ \unit\rangle .
+\]
+The active thread is $1$ and its redex is $\getc{l}$ (context $\ectx=[\cdot]$).
+We check every rule of Figure~\ref{fig:semantics}:
+\begin{itemize}
+\item $\textsc{Get}$ requires $\lambda = 1$, but $\lambda = \bot$. \emph{Fails.}
+\item $\textsc{Begin}$ requires the redex to be $\bbegin\,;\,e$, but it is
+$\getc{l}$. \emph{Fails.}
+\item $\textsc{Set},\textsc{End},\textsc{Retry}$ require their own redexes
+($\setc{l}{v}$, $\eend$, $\retry$) and $\lambda = 1$; both premises fail.
+\end{itemize}
+No rule matches, so $C_0$ takes \emph{no} step:
+\[
+\langle \st{0},\ \bot,\ \bot,\ \emap{1{:}\getc{l}},\ \st{0},\ \unit\rangle
+\ \not\rightarrow .
+\]
+The ill-formed $\getc{l}$ never executes; the thread is stuck. Contrast the
+well-formed version, $\bbegin\,;\,(\getc{l}\,;\,\eend)$. There the leading
+$\bbegin$ fires first (setting $\lambda:=1$), and only \emph{then}, with
+$\lambda = 1$, can the $\getc{l}$ fire: it is exactly the $\bbegin$ that grants
+the ownership $\getc{l}$ demands.
+
+\subsection{A thread cannot act inside another thread's transaction}
+
+This is the case the premise $\lambda = i$ is really designed to rule out. Take
+two threads,
+\[
+E_0 \;=\; \emap{1{:}\bbegin\,;\,(\getc{l}\,;\,\eend),\ 2{:}\getc{l}} ,
+\]
+so thread $1$ is well-formed and thread $2$ tries a bare $\getc{l}$. Let thread
+$1$ open its transaction:
+{\small
+\[
+\begin{aligned}
+&\langle \st{0},\ \bot,\ \bot,\ E_0,\ \st{0},\ \unit\rangle\\
+&\quad\xrightarrow{\ \bbegin\,@\,t_1\ }\
+\langle \st{0},\ 1,\ t_1,\ \emap{1{:}\unit\,;\,(\getc{l}\,;\,\eend),\ 2{:}\getc{l}},\ \st{0},\ \getc{l}\,;\,\eend\rangle .
+\end{aligned}
+\]}%
+Now $\lambda = 1$: thread $1$ owns the live transaction $t_1$. Suppose thread $2$
+is the next to step; its redex is $\getc{l}$. The only rule that could
+fire is $\textsc{Get}$, and it requires $\lambda = 2$ --- but $\lambda = 1$. The
+premise fails, so thread $2$'s read is \emph{not enabled}:
+\[
+\text{there is no } C' \text{ with }\quad
+\langle \st{0},\ 1,\ t_1,\ \emap{1{:}\dots,\ 2{:}\getc{l}},\ \st{0},\ \getc{l}\,;\,\eend\rangle
+\ \xrightarrow{\ \getev{l}{0}{\,\cdot\,}\ }\ C' .
+\]
+Under the old rule (premise $\lambda = t$, with $t$ unconstrained by the acting
+thread) this step \emph{would} have fired, letting thread $2$ read inside thread
+$1$'s transaction and mislabel it $@t_1$. The premise $\lambda = i$ removes that:
+only the owner may step, so thread $2$ must wait until thread $1$ commits
+($\lambda$ returns to $\bot$) and then open its own transaction. Well-formedness
+holds by construction.
+
+%% =====================================================================
+\section{Histories and transactions}
+\label{sec:history}
+
+A run emits a sequence of runtime actions
+\[
+a \;::=\; \bbegin\,@\,t \;\mid\; \eend\,@\,t \;\mid\; \retry\,@\,t
+      \;\mid\; \getev{l}{v}{t} \;\mid\; \setev{l}{v}{t}.
+\]
+An \emph{event} is a pair $e = (\iota, a)$ pairing a unique identifier
+$\iota \in \EventId$ with an action $a$; we write $\mathrm{act}(e)=a$ and
+$\mathrm{tid}(e)=t$ for the transaction identifier carried by $a$.
+
+\begin{definition}[History]
+A \emph{history} is a pair $H = (E, \po)$, where $E$ is a finite set of events with
+distinct identifiers and $\po$ (the \emph{program order}) is a total order on $E$.
+The history of a run collects the events it emits, ordered by $\po$ as they occur.
+\end{definition}
+
+\begin{definition}[Transaction]
+Let $H = (E, \po)$ and let $t$ be a transaction identifier occurring in $E$. The
+\emph{transaction} $t$ is the pair
+\[
+T_t \;=\; (E_t, \po_t),
+\qquad
+E_t = \{\, e \in E : \mathrm{tid}(e) = t \,\},
+\qquad
+\po_t = \po \restriction E_t
+      = \po \cap (E_t \times E_t) ,
+\]
+i.e.\ $E_t$ is the events of $H$ tagged $t$, and $\po_t$ is $\po$ \emph{restricted}
+to them: viewing the order $\po$ as a set of pairs, $\po \restriction E_t$ keeps
+only the pairs whose \emph{both} events lie in $E_t$. So $\po_t$ is the same
+ordering filtered to $t$'s own events; being the restriction of a total order, it
+is itself total.
+\end{definition}
+
+\begin{definition}[Committed transaction]
+A transaction $T_t = (E_t, \po_t)$ is \emph{committed} if its $\po_t$-greatest event
+is a commit, $\mathrm{act}\bigl(\max_{\po_t} E_t\bigr) = \eend\,@\,t$ --- it is
+opened by $\bbegin\,@\,t$ and closed by $\eend\,@\,t$. It is \emph{aborted} if
+instead $\mathrm{act}\bigl(\max_{\po_t} E_t\bigr) = \retry\,@\,t$, and \emph{pending}
+if $E_t$ contains neither $\eend\,@\,t$ nor $\retry\,@\,t$ (the run stopped inside
+it).
+\end{definition}
+
+\begin{example}
+Take a run on a single location $l$ (initially $0$) in which the lock serialises
+three transactions; number the events by position, $e_k=(k,a_k)$. The history is
+$H = (E,\po)$ with $E=\{e_1,\dots,e_{11}\}$ and $\po: e_1 < e_2 < \cdots < e_{11}$,
+where
+\[
+\begin{array}{r@{\;\;}l}
+e_1 \dots e_4    :& \bbegin\,@\,t_1 \cdot \getev{l}{0}{t_1} \cdot \setev{l}{1}{t_1} \cdot \eend\,@\,t_1,\\[2pt]
+e_5 \dots e_7    :& \bbegin\,@\,t_2 \cdot \getev{l}{1}{t_2} \cdot \retry\,@\,t_2,\\[2pt]
+e_8 \dots e_{11} :& \bbegin\,@\,t_3 \cdot \getev{l}{1}{t_3} \cdot \setev{l}{2}{t_3} \cdot \eend\,@\,t_3.
+\end{array}
+\]
+($t_1$ commits $l=1$; $t_2$ reads it and retries, so its thread re-runs as the
+fresh identifier $t_3$, which commits $l=2$.)
+
+A single \emph{event} is $e_2 = (2,\, \getev{l}{0}{t_1})$, with
+$\mathrm{tid}(e_2)=t_1$ and $\mathrm{act}(e_2)=\getev{l}{0}{t_1}$ --- a read of $0$
+from $l$ in $t_1$.
+
+Projecting $H$ by transaction identifier gives three \emph{transactions}:
+\[
+T_{t_1} = (\{e_1,e_2,e_3,e_4\},\, \po_{t_1}), \quad
+T_{t_2} = (\{e_5,e_6,e_7\},\, \po_{t_2}), \quad
+T_{t_3} = (\{e_8,e_9,e_{10},e_{11}\},\, \po_{t_3}),
+\]
+each with $\po_t = \po \restriction E_t$. Checking the $\po_t$-greatest event:
+$\mathrm{act}(\max_{\po_{t_1}}E_{t_1}) = \eend\,@\,t_1$ and
+$\mathrm{act}(\max_{\po_{t_3}}E_{t_3}) = \eend\,@\,t_3$, so $T_{t_1}$ and $T_{t_3}$
+are \emph{committed}; whereas
+$\mathrm{act}(\max_{\po_{t_2}}E_{t_2}) = \retry\,@\,t_2$, so $T_{t_2}$ is aborted,
+not a committed transaction.
+\end{example}
+
+%% =====================================================================
+\section{Internal consistency}
+\label{sec:int}
+
+Cerone et al.'s internal-consistency axiom is
+\[
+\forall (E, \po) \in H.\ \forall e \in E.\ \forall x, n.\quad
+\bigl(e = (\_,\, \rdev{x}{n}) \,\wedge\, \po^{-1}(e) \cap \HEvent_x \neq \emptyset\bigr)
+\implies
+\maxpo\bigl(\po^{-1}(e) \cap \HEvent_x\bigr) = (\_,\, \anyop{x}{n}),
+\tag{\textsc{Int}}
+\]
+where $\HEvent_x$ is the set of read and write events on $x$, and
+$(\_,\anyop{x}{n})$ is a read or a write of $n$ on $x$.
+
+\begin{example}[$\textsc{Int}$ needs no commit]
+Neither transaction below commits, yet $\textsc{Int}$ still pins both reads:
+\[
+H:\quad \bbegin\,@\,t_1 \cdot \setev{x}{2}{t_1} \cdot \getev{x}{2}{t_1} \cdot \retry\,@\,t_1
+      \cdot \bbegin\,@\,t_2 \cdot \setev{x}{5}{t_2} \cdot \getev{x}{5}{t_2}
+\]
+($t_1$ aborts, $t_2$ is left pending). For $\getev{x}{2}{t_1}$,
+$\po^{-1}(e)\cap\HEvent_x = \{\setev{x}{2}{t_1}\}$, whose $\maxpo$ is a write of $2$
+on $x$, so the read is forced to $2$; likewise $\getev{x}{5}{t_2}$ is forced to
+$5$. Committedness (if that is even a word) never entered.
+\end{example}
+
+\begin{example}[external read: $\textsc{Int}$ vacuous]
+When a read is a transaction's first access to $x$, $\textsc{Int}$ is silent:
+\[
+H:\quad \bbegin\,@\,t_1 \cdot \setev{x}{7}{t_1} \cdot \eend\,@\,t_1
+      \cdot \bbegin\,@\,t_2 \cdot \getev{x}{7}{t_2}
+\]
+($t_1$ committed). Here $\getev{x}{7}{t_2}$ has
+$\po^{-1}(e)\cap\HEvent_x = \emptyset$, so the premise fails and $\textsc{Int}$
+holds \emph{vacuously}.
+\end{example}
+
+%% =====================================================================
+\section{External consistency}
+\label{sec:ext}
+
+Internal consistency (Section~\ref{sec:int}) constrains a read only when the same
+transaction has already touched that location --- when
+$\po^{-1}(e) \cap \HEvent_x \neq \emptyset$. Every other read is one whose value
+\emph{cannot} come from within its own transaction: a read of $x$ not preceded, in
+its transaction, by any access to $x$. We call such a read \emph{external},
+because the value it returns must come from \emph{another} transaction. External
+reads are exactly the ones $\textsc{Int}$ leaves free --- its premise is vacuous,
+as in the last example of Section~\ref{sec:int} --- and external consistency is
+what fixes them.
+
+Following Cerone, we summarise a transaction's effect on a location $x$ with two
+judgements. $T \vdash \mathsf{Write}\ x : n$ holds when $T$ writes $x$ and its
+$\po$-last write to $x$ has value $n$ --- the value $T$ leaves in $x$. And
+$T \vdash \mathsf{Read}\ x : n$ holds when $T$'s $\po$-first access to $x$ is a read
+returning $n$ --- precisely an \emph{external} read of $x$ by $T$.
+
+The value such a read may return comes from the committed transactions that took
+effect before it. That order is \emph{arbitration}.
+
+\begin{definition}[Arbitration]
+For committed transactions with identifiers $s \neq t$ in a history $H = (E,\po)$,
+\[
+T_s <_{\mathrm{AR}} T_t \quad\text{iff}\quad
+\eend\,@\,s \ \text{precedes}\ \bbegin\,@\,t \ \text{in}\ \po ,
+\]
+i.e.\ $s$ commits before $t$ opens. Since the lock keeps at most one transaction
+live, committed transactions never overlap, so $<_{\mathrm{AR}}$ totally orders the
+committed transactions of $H$ --- it is their \emph{commit order}. Write
+$\mathrm{AR}^{-1}(T) = \{\, S \mid S <_{\mathrm{AR}} T \,\}$ for the committed
+transactions preceding $T$.
+\end{definition}
+
+We do \emph{not} model a separate visibility relation. $\mathrm{VIS}$ would record
+that one transaction can \emph{see} another's effects --- a distinct notion only
+under weaker isolation, where serializability fails, visibility is strictly weaker
+than arbitration ($\mathrm{VIS} \subsetneq \mathrm{AR}$), and $\mathrm{VIS}$ must be
+given on its own. Here there is no such gap: every committed transaction's writes
+are available to every $\mathrm{AR}$-later transaction, so arbitration alone
+suffices.
+
+External consistency then says: an external read returns the value written by the
+$\mathrm{AR}$-latest committed writer of that location, or the initial value $0$ if
+there is none. Writing the writers $S$ over \emph{committed} transactions only,
+\[
+\begin{aligned}
+&\forall T \in H.\ \forall x, n.\quad T \vdash \mathsf{Read}\ x : n \implies {}\\
+&\quad \bigl(\mathrm{AR}^{-1}(T) \cap \{\, S \mid S \vdash \mathsf{Write}\ x : \_ \,\} = \emptyset \,\wedge\, n = 0\bigr)\\
+&\quad {}\vee\ \mathrm{max}_{\mathrm{AR}}\bigl(\mathrm{AR}^{-1}(T) \cap \{\, S \mid S \vdash \mathsf{Write}\ x : \_ \,\}\bigr) \vdash \mathsf{Write}\ x : n .
+\end{aligned}
+\tag{\textsc{Ext}}
+\]
+
+\begin{example}[committed writer is visible]
+$t_1$ commits its write, so $\textsc{Ext}$ pins $t_2$'s read to it:
+\[
+H:\quad \bbegin\,@\,t_1 \cdot \setev{x}{7}{t_1} \cdot \eend\,@\,t_1
+      \cdot \bbegin\,@\,t_2 \cdot \getev{x}{7}{t_2}
+\]
+$\eend\,@\,t_1$ precedes $\bbegin\,@\,t_2$, so $T_{t_1} <_{\mathrm{AR}} T_{t_2}$, and
+$T_{t_1}$ is committed with $T_{t_1} \vdash \mathsf{Write}\ x : 7$. Hence
+$\mathrm{max}_{\mathrm{AR}}\bigl(\mathrm{AR}^{-1}(T_{t_2}) \cap \{S \mid S \vdash \mathsf{Write}\ x:\_\}\bigr) = T_{t_1}$,
+and $\textsc{Ext}$ forces the read to $7$.
+\end{example}
+
+\begin{example}[no committed writer: read is $0$]
+$t_1$ aborts, so its write is uncommitted; $\textsc{Ext}$ still holds --- with the
+initial value:
+\[
+H:\quad \bbegin\,@\,t_1 \cdot \setev{x}{2}{t_1} \cdot \retry\,@\,t_1
+      \cdot \bbegin\,@\,t_2 \cdot \getev{x}{0}{t_2}
+\]
+$T_{t_1}$ is not committed, so it is not in $\mathrm{AR}^{-1}(T_{t_2})$; hence
+$\mathrm{AR}^{-1}(T_{t_2}) \cap \{S \mid S \vdash \mathsf{Write}\ x:\_\} = \emptyset$,
+and $\textsc{Ext}$ forces the read to $0$ --- matching the rolled-back store.
+\end{example}
+
+\end{document}

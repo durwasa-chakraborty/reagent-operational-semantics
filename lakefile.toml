@@ -1,0 +1,5 @@
+name = "reagent"
+defaultTargets = ["Reagent"]
+
+[[lean_lib]]
+name = "Reagent"
