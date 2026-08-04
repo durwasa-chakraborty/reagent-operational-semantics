@@ -1,72 +1,132 @@
 /-
-  Operational semantics of Reagent V1 (four rules).
+  Operational semantics of Reagent (Figure "Semantics of Reagent commands",
+  §Local (pure) reductions, and §Lifting local reductions).
 
-  The labelled transition relation `C --ℓ--> C'` fires on the head command of a
-  thread's sequence.  Every transactional rule (Get/Set/End) carries the premise
-  `λ = i` (only the owner thread may step) and `θ = t` (a transaction is live,
-  supplying the tag).  There are no evaluation contexts (commands have no
-  sub-expressions) and no administrative reductions: each command rule advances
-  the sequence `c ; e` directly to its continuation `e`.
+  Every rule fires on the redex the active thread's evaluation context `ECtx`
+  locates, and rewrites it in place, framing the rest of the thread map. The
+  transactional rules (Get / Set / End / Retry) carry `λ = i` — only the thread
+  that owns the live transaction may step inside it — and `θ = t`, which
+  supplies the tag on the emitted label.
+
+  The pure forms (`+`, `==`, `let`, `if`, and discarding a leading `()`) never
+  touch the store or the transaction state. They are given as a separate
+  relation `⇝` on redexes and lifted into the transition system by `Local`,
+  which labels them `ℓ_adm`.
 -/
 import Reagent.Syntax
 
 namespace Reagent
 
-/-- Visible labels.  V1 has only transition labels — no `ℓ_adm`. -/
+/-- Transition labels: the events a transaction performs. -/
 inductive Label where
   | begin : TxId → Label
   | get   : Loc → Nat → TxId → Label
   | set   : Loc → Nat → TxId → Label
   | eend  : TxId → Label
+  | retry : TxId → Label
 deriving DecidableEq, Repr
 
-/-- The four command rules (Figure "Semantics of Reagent commands", restricted).
+/-- A trace label is *either* a transition label *or* an administrative step
+`ℓ_adm` (Definition "Trace"). The distinction matters downstream: administrative
+steps are trace labels but **not** events, so they are not members of any
+transaction's `E`. -/
+inductive TLabel where
+  | ev  : Label → TLabel
+  | adm : TLabel
+deriving DecidableEq, Repr
 
-    `E` is a total map (`ThId → Expr`), so a thread's program is `C.threadMap i`
-    directly — no `some`/`none`. -/
-inductive Trans : Config → Label → Config → Prop where
-  | begin {C i t e} :
-      C.threadMap i = .seq .begin e →
-      C.lam = none →
-      Trans C (.begin t)
-        { C with lam := some i, theta := some t, threadMap := update C.threadMap i e }
-  | get {C i l t v e} :
-      C.threadMap i = .seq (.getc l) e →
-      C.lam = some i →
-      C.theta = some t →
+/-- Local (pure) reductions `r ⇝ e` on redexes, independent of the six-tuple
+(§Local (pure) reductions, §Administrative reductions).
+
+`eqv` is the one rule the document does not state: it gives evaluation contexts
+`ECtx == e` and `v == ECtx` and uses `==` in its worked example, but lists no
+reduction for it, so the obvious one is supplied here. -/
+inductive Local : Expr → Expr → Prop where
+  | add {n₁ n₂} :
+      Local (.add (.val (.num n₁)) (.val (.num n₂))) (.val (.num (n₁ + n₂)))
+  | eqv {v₁ v₂} :
+      Local (.eqv (.val v₁) (.val v₂)) (.val (.bool (decide (v₁ = v₂))))
+  | letv {x v e} :
+      Local (.letx x (.val v) e) (e.subst x v)
+  | ifTrue {e₁ e₂} :
+      Local (.ite (.val (.bool true)) e₁ e₂) e₁
+  | ifFalse {e₁ e₂} :
+      Local (.ite (.val (.bool false)) e₁ e₂) e₂
+  | seqUnit {e} :
+      Local (.seq (.val .unit) e) e
+
+/-- The command rules in context form, together with `Local`.
+
+`Begin`'s redex is `begin ; e`: the `begin` becomes `()` in place, leaving
+`ECtx[() ; e]`, and the continuation `e` is saved as `Ê` — exactly the body
+`Retry` reinstates. It mints `C.nextTx` as the document's `t_fresh`, bumps the
+counter, and snapshots the store.
+
+`Get` reduces to the value read, `ECtx[v]`, so a surrounding `let x = get(l) in …`
+can consume it. `Set`'s redex is `set(l,v)` with `v` already a value — the
+context `set(l, ECtx)` is what evaluates the argument — and it reduces to `()`.
+
+`Retry` is lock releasing: it rolls the store back to `σ̂`, clears `λ` and `θ`
+so another thread may `begin`, and re-arms the thread as `ECtx[begin ; Ê]`, so the
+retried attempt must re-acquire the lock and runs under a *fresh* id.
+
+`Local` lifts `⇝` to an `ℓ_adm`-labelled step. It leaves `σ`, `λ`, `θ`, `σ̂`
+and `Ê` untouched and carries no `λ = i` premise: any thread may take a pure
+step, inside a transaction or not. -/
+inductive Trans : Config → TLabel → Config → Prop where
+  | begin {C i e} {K : Ctx} :
+      C.threadMap i = K.plug (.seq .begin e) →
+      C.activeThread = none →
+      Trans C (.ev (.begin C.nextTx))
+        { C with activeThread := some i, activeTx := some C.nextTx,
+                 nextTx := C.nextTx + 1,
+                 snapshot := C.store, savedBody := e,
+                 threadMap := update C.threadMap i (K.plug (.seq (.val .unit) e)) }
+  | get {C i l v t} {K : Ctx} :
+      C.threadMap i = K.plug (.getc l) →
+      C.activeThread = some i →
+      C.activeTx = some t →
       C.store l = v →
-      Trans C (.get l v t)
-        { C with threadMap := update C.threadMap i e }
-  | set {C i l n t e} :
-      C.threadMap i = .seq (.setc l n) e →
-      C.lam = some i →
-      C.theta = some t →
-      Trans C (.set l n t)
-        { C with store := update C.store l n, threadMap := update C.threadMap i e }
-  | eend {C i t e} :
-      C.threadMap i = .seq .eend e →
-      C.lam = some i →
-      C.theta = some t →
-      Trans C (.eend t)
-        { C with lam := none, theta := none, threadMap := update C.threadMap i e }
+      Trans C (.ev (.get l v t))
+        { C with threadMap := update C.threadMap i (K.plug (.val (.num v))) }
+  | set {C i l v t} {K : Ctx} :
+      C.threadMap i = K.plug (.setc l (.val (.num v))) →
+      C.activeThread = some i →
+      C.activeTx = some t →
+      Trans C (.ev (.set l v t))
+        { C with store := update C.store l v,
+                 threadMap := update C.threadMap i (K.plug (.val .unit)) }
+  | eend {C i t} {K : Ctx} :
+      C.threadMap i = K.plug .eend →
+      C.activeThread = some i →
+      C.activeTx = some t →
+      Trans C (.ev (.eend t))
+        { C with activeThread := none, activeTx := none,
+                 threadMap := update C.threadMap i (K.plug (.val .unit)) }
+  | retry {C i t} {K : Ctx} :
+      C.threadMap i = K.plug .retry →
+      C.activeThread = some i →
+      C.activeTx = some t →
+      Trans C (.ev (.retry t))
+        { C with store := C.snapshot, activeThread := none, activeTx := none,
+                 threadMap :=
+                   update C.threadMap i (K.plug (.seq .begin C.savedBody)) }
+  | adm {C i r e} {K : Ctx} :
+      C.threadMap i = K.plug r →
+      Local r e →
+      Trans C .adm
+        { C with threadMap := update C.threadMap i (K.plug e) }
 
-/-- A trace: the sequence of labels along a run (Definition "Trace"). -/
-inductive Trace : Config → List Label → Config → Prop where
+/-- A trace: the sequence of labels emitted along a run, administrative steps
+included. -/
+inductive Trace : Config → List TLabel → Config → Prop where
   | nil  {C} : Trace C [] C
   | cons {C ℓ C' w C''} : Trans C ℓ C' → Trace C' w C'' → Trace C (ℓ :: w) C''
 
-/-- Reachability. -/
-def Reaches (C C' : Config) : Prop := ∃ w, Trace C w C'
-
-/-- Concatenation of traces. -/
-theorem Trace.append {C w₁ C' w₂ C''} (h₁ : Trace C w₁ C') (h₂ : Trace C' w₂ C'') :
-    Trace C (w₁ ++ w₂) C'' := by
-  induction h₁ with
-  | nil => exact h₂
-  | cons tr _ ih => exact .cons tr (ih h₂)
-
-/-- An initial configuration `⟨σ₀, ⊥, ⊥, E₀⟩` with the zero store. -/
-def init (E₀ : ThreadMap) : Config :=
-  { store := Store.init_store, lam := none, theta := none, threadMap := E₀ }
+/-- The initial configuration `⟨σ₀, ⊥, ⊥, E₀, σ₀, ()⟩`, minting ids from `0`. -/
+def initConfig (E₀ : ThreadMap) : Config :=
+  { store := Store.init_store, activeThread := none, activeTx := none,
+    threadMap := E₀, snapshot := Store.init_store, savedBody := .val .unit,
+    nextTx := 0 }
 
 end Reagent

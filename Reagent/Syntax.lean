@@ -1,14 +1,16 @@
 /-
-  Reagent — Version 1 (minimal core).
+  Reagent — full core language.
 
-  Syntax and configurations for the four-command language `begin / get / set /
-  end`, following `docs/reagent-correctness.tex` with `retry`, administrative
-  reductions, and expression forms (`let`/`if`/`+`) removed.
+  Abstract syntax, evaluation contexts, and configurations, following
+  `docs/reagent-correctness.tex` §Abstract syntax and §Evaluation contexts.
 
-  Because `retry` is gone, the six-tuple `⟨σ, λ, θ, E, σ̂, Ê⟩` of the document
-  loses its two retry-only fields (the snapshot `σ̂` and saved body `Ê`) and
-  shrinks to the four-tuple `⟨σ, λ, θ, E⟩`.  (Those two fields return in the
-  version that reintroduces `retry`.)
+  Commands are expressions (`e ::= … | c`), so there is no separate `Cmd` type:
+  `set(l, e)` takes an *expression* argument, which the context `set(l, ECtx)`
+  evaluates to a value before `Set` may fire.
+
+  Configurations are the document's six-tuple `⟨σ, λ, θ, E, σ̂, Ê⟩` — `retry`
+  needs the snapshot `σ̂` to roll the store back and the saved body `Ê` to
+  re-run — together with the counter that mints fresh transaction ids.
 -/
 
 namespace Reagent
@@ -19,70 +21,129 @@ abbrev Loc  : Type := Nat
 abbrev TxId : Type := Nat
 /-- Thread identifiers. -/
 abbrev ThId : Type := Nat
-/-- Store Loc → ℕ -/
+/-- Immutable, `let`-bound variables. -/
+abbrev Var  : Type := Nat
+/-- The shared store `σ : Loc → ℕ`. -/
 abbrev Store : Type := Loc → Nat
 
-/-- Programs of the V1 language.
-
-    A program is a right-nested sequence of commands ending in `unit`
-    (e.g. `begin ; get l ; set l 1 ; end ; unit`).  Commands carry no
-    sub-expressions — `get` reads a location, `set` writes a literal `n` — so
-    there is nothing to evaluate *inside* a command and hence no need for
-    evaluation contexts: the redex is always the head command of a thread's
-    sequence.  `get`'s read value is recorded only in its trace label (there is
-    no binder to consume it), so it is discarded here. -/
-inductive Expr where
-  | unit : Expr                    -- the finished program ()
-  | seq  : Expr → Expr → Expr      -- c ; e
-  | getc : Loc → Expr              -- get(l)
-  | setc : Loc → Nat → Expr        -- set(l, n)
-  | begin : Expr                   -- begin
-  | eend : Expr                    -- end
+/-- Values `v ::= n | () | true | false`. -/
+inductive Val where
+  | num  : Nat → Val
+  | unit : Val
+  | bool : Bool → Val
 deriving DecidableEq, Repr
 
+/-- Expressions
 
-def update {α β : Type} [DecidableEq α] (f : α → β) (a : α) (b : β): α → β :=
-  fun a' => if a' = a then b else f a'
+`e ::= v | x | e₁ + e₂ | e₁ == e₂ | let x = e₁ in e₂ | if e then e₁ else e₂
+     | e₁ ; e₂ | get(l) | set(l,e) | begin | end | retry`
 
-@[simp] theorem update_same{α β : Type} [DecidableEq α] (f : α → β) (a : α) (b : β)
-: update f a b a = b := by
-  simp [update]
+The last five are the commands `c`, which the grammar folds into `e`. The store
+is ℕ-valued, so only a `num` may be written by `set`. -/
+inductive Expr where
+  | val   : Val → Expr                    -- v
+  | var   : Var → Expr                    -- x
+  | add   : Expr → Expr → Expr            -- e₁ + e₂
+  | eqv   : Expr → Expr → Expr            -- e₁ == e₂
+  | letx  : Var → Expr → Expr → Expr      -- let x = e₁ in e₂
+  | ite   : Expr → Expr → Expr → Expr     -- if e then e₁ else e₂
+  | seq   : Expr → Expr → Expr            -- e₁ ; e₂
+  | getc  : Loc → Expr                    -- get(l)
+  | setc  : Loc → Expr → Expr             -- set(l, e)
+  | begin : Expr                          -- begin
+  | eend  : Expr                          -- end
+  | retry : Expr                          -- retry
+deriving DecidableEq, Repr
 
-@[simp] theorem update_other{α β : Type} [DecidableEq α] (f : α → β) (a a': α) (b : β)
-(ih : a ≠ a')
-: update f a b a' = f a' := by
-  simp [update, ih.symm]
+/-- Substitution `e[v/x]`, used by the `let` reduction. Substituting a *value*
+means there is nothing to capture, so the only care needed is shadowing: a
+`let` that rebinds `x` stops the substitution in its body. -/
+def Expr.subst (x : Var) (v : Val) : Expr → Expr
+  | .val w      => .val w
+  | .var y      => if y = x then .val v else .var y
+  | .add a b    => .add (a.subst x v) (b.subst x v)
+  | .eqv a b    => .eqv (a.subst x v) (b.subst x v)
+  | .letx y a b => .letx y (a.subst x v) (if y = x then b else b.subst x v)
+  | .ite c a b  => .ite (c.subst x v) (a.subst x v) (b.subst x v)
+  | .seq a b    => .seq (a.subst x v) (b.subst x v)
+  | .getc l     => .getc l
+  | .setc l a   => .setc l (a.subst x v)
+  | .begin      => .begin
+  | .eend       => .eend
+  | .retry      => .retry
 
+/-- Evaluation contexts
 
+`ECtx ::= [·] | ECtx ; e | let x = ECtx in e | ECtx + e | v + ECtx | ECtx == e | v == ECtx
+     | if ECtx then e else e | set(l, ECtx)`
 
-namespace Store
+an expression with a single hole marking where the next reduction happens.
+Named `Ctx`, kept deliberately apart from `E : ThreadMap` — the two are distinct
+objects. The `v + ECtx` and `v == ECtx` forms are what make evaluation left-to-right:
+the right operand is reached only once the left is a value. -/
+inductive Ctx where
+  | hole  : Ctx                           -- [·]
+  | seq   : Ctx → Expr → Ctx              -- ECtx ; e
+  | letx  : Var → Ctx → Expr → Ctx        -- let x = ECtx in e
+  | addL  : Ctx → Expr → Ctx              -- ECtx + e
+  | addR  : Val → Ctx → Ctx               -- v + ECtx
+  | eqL   : Ctx → Expr → Ctx              -- ECtx == e
+  | eqR   : Val → Ctx → Ctx               -- v == ECtx
+  | ite   : Ctx → Expr → Expr → Ctx       -- if ECtx then e₁ else e₂
+  | setc  : Loc → Ctx → Ctx               -- set(l, ECtx)
+deriving DecidableEq, Repr
 
-/-- The all-zero initial store `σ₀`. -/
-def init_store : Store := fun _ => 0
-
-end Store
+/-- `ECtx[e]`: plug `e` into the hole. -/
+def Ctx.plug : Ctx → Expr → Expr
+  | .hole,        e => e
+  | .seq K e',    e => .seq (K.plug e) e'
+  | .letx x K e', e => .letx x (K.plug e) e'
+  | .addL K e',   e => .add (K.plug e) e'
+  | .addR v K,    e => .add (.val v) (K.plug e)
+  | .eqL K e',    e => .eqv (K.plug e) e'
+  | .eqR v K,     e => .eqv (.val v) (K.plug e)
+  | .ite K e₁ e₂, e => .ite (K.plug e) e₁ e₂
+  | .setc l K,    e => .setc l (K.plug e)
 
 /-- A thread map `E : ThId → Expr`. -/
 abbrev ThreadMap : Type := ThId → Expr
 
-/-- A configuration is the four-tuple `⟨σ, λ, θ, E⟩`:
+/-- Pointwise update `f[a ↦ b]`. -/
+def update {α β : Type} [DecidableEq α] (f : α → β) (a : α) (b : β) : α → β :=
+  fun a' => if a' = a then b else f a'
 
-    * `store`  – shared store `σ`;
-    * `lam`    – the thread `i` that holds the lock (`none` is `⊥`);
- -/
-/-* `theta`  – the live transaction id `θ` (`none` is `⊥`);
-    * `threads`– the thread map `E`.
+@[simp] theorem update_other {α β : Type} [DecidableEq α] (f : α → β) (a a' : α)
+    (b : β) (hne : a ≠ a') : update f a b a' = f a' := by
+  simp [update, hne.symm]
 
-    Invariant kept by the rules: `λ = ⊥ ↔ θ = ⊥`. -/
+/-- The all-zero initial store `σ₀`. -/
+def Store.init_store : Store := fun _ => 0
+
+/-- A configuration `⟨σ, λ, θ, E, σ̂, Ê⟩` together with the freshness counter:
+
+* `store`        – the shared store `σ`;
+* `activeThread` – `λ`, the thread holding the lock (`none` is `⊥`);
+* `activeTx`     – `θ`, the live transaction id (`none` is `⊥`);
+* `threadMap`    – the thread map `E`;
+* `snapshot`     – `σ̂`, the store as it was when the live transaction began;
+* `savedBody`    – `Ê`, the body to re-run after an abort;
+* `nextTx`       – the id `Begin` mints next.
+
+The rules maintain `activeThread = ⊥ ↔ activeTx = ⊥`. `Begin` records `σ̂` and
+`Ê`; `Retry` rolls the store back to `σ̂` and re-arms the thread as `begin ; Ê`.
+
+`nextTx` is how the `t_fresh` premise of `Begin` is realised: no id is ever
+reused. That is not decoration — internal consistency is false without it, since
+a reused id would splice two unrelated attempts into one "transaction" whose
+read contradicts its own earlier write. It is also what keeps a retried attempt
+a *separate* transaction from the attempt it replaces. -/
 structure Config where
-  store   : Store
-  lam     : Option ThId
-  theta   : Option TxId
-  threadMap : ThreadMap
-
-/-- TODO : We don't know if this is correct but for now. -/
-/-Termination condition: every active thread is at `unit`. -/
-def Config.terminated (C : Config) (dom : List ThId) : Prop :=
-  ∀ i ∈ dom, C.threadMap i = .unit
+  store        : Store          -- σ
+  activeThread : Option ThId    -- λ
+  activeTx     : Option TxId    -- θ
+  threadMap    : ThreadMap      -- E
+  snapshot     : Store          -- σ̂
+  savedBody    : Expr           -- Ê
+  nextTx       : TxId
 
 end Reagent
