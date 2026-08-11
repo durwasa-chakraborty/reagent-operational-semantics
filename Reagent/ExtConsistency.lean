@@ -122,28 +122,30 @@ theorem storeEnc_step {C C' : Config} {ℓ : TLabel} {x : Loc} {s : Nat × Optio
   obtain ⟨c, p⟩ := s
   obtain ⟨hstore, hnone, hsnap⟩ := h
   cases tr with
-  | @begin i e K he hl =>
-    have hp : p = none := hnone hl
+  | ctx _ hhead =>
+  cases hhead with
+  | @begin σ θ E snap body n _ e =>
+    have hp : p = none := hnone rfl
     subst hp
     refine ⟨?_, ?_, ?_⟩
     · simpa [cvStep] using hstore
     · intro hc; simp at hc
     · intro j _; simpa [cvStep] using hstore
-  | @get i l v t K he hl ht hv => exact ⟨hstore, hnone, hsnap⟩
-  | @set i l v t K he hl ht =>
+  | @get σ _ t E snap body n l v hv => exact ⟨hstore, hnone, hsnap⟩
+  | @set σ _ t E snap body n l v =>
     by_cases hlx : l = x
     · subst hlx
       refine ⟨?_, ?_, ?_⟩
       · simp [cvStep, update]
-      · intro hc; rw [hl] at hc; exact absurd hc (by simp)
-      · intro j _; simpa [cvStep] using hsnap i hl
+      · intro hc; exact absurd hc (by simp)
+      · intro j _; simpa [cvStep] using hsnap _ rfl
     · refine ⟨?_, ?_, ?_⟩
       · simp only [cvStep, if_neg hlx]
-        show (update C.store l v) x = p.getD c
-        rw [update_other C.store l x v hlx]; exact hstore
-      · intro hc; rw [hl] at hc; exact absurd hc (by simp)
-      · intro j _; simp only [cvStep, if_neg hlx]; exact hsnap i hl
-  | @eend i t K he hl ht =>
+        show (update σ l v) x = p.getD c
+        rw [update_other σ l x v hlx]; exact hstore
+      · intro hc; exact absurd hc (by simp)
+      · intro j _; simp only [cvStep, if_neg hlx]; exact hsnap _ rfl
+  | @eend σ _ t E snap body n =>
     cases p with
     | none =>
       refine ⟨by simpa [cvStep] using hstore, fun _ => rfl, ?_⟩
@@ -151,12 +153,12 @@ theorem storeEnc_step {C C' : Config} {ℓ : TLabel} {x : Loc} {s : Nat × Optio
     | some v =>
       refine ⟨by simpa [cvStep] using hstore, fun _ => rfl, ?_⟩
       intro j hj; simp at hj
-  | @retry i t K he hl ht =>
+  | @retry σ _ t E snap body n =>
     refine ⟨?_, fun _ => rfl, ?_⟩
-    · show C.snapshot x = _
-      simpa [cvStep] using hsnap i hl
+    · show snap x = _
+      simpa [cvStep] using hsnap _ rfl
     · intro j hj; simp at hj
-  | @adm i r e K he hloc => exact ⟨hstore, hnone, hsnap⟩
+  | @adm Cadm _ r e hloc => exact ⟨hstore, hnone, hsnap⟩
 
 /-- The invariant is preserved along a whole run. -/
 theorem storeEnc_fold {C C' : Config} {w : List TLabel} (x : Loc)
@@ -303,16 +305,15 @@ theorem inv_pending {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config} (x : Lo
     (by intro t ht; simp [initConfig] at ht) ?_ h
   intro ls C ℓ C' hrun ih hstep
   cases hstep with
-  | @get i l v t K he hl ht hv =>
+  | ctx _ hhead =>
+  cases hhead with
+  | @get σ _ t E snap body n l v hv =>
     intro t' ht'
-    have ht2 : C.activeTx = some t' := ht'
     rw [cv_append, lastSetValOf_append_of_not_set (by simp [Label.isSetOn])]
-    exact ih t' ht2
-  | @set i l v t K he hl ht =>
+    exact ih t' ht'
+  | @set σ _ t E snap body n l v =>
     intro t' ht'
-    have ht2 : C.activeTx = some t' := ht'
-    rw [ht] at ht2
-    have htt : t = t' := Option.some.inj ht2
+    have htt : t = t' := Option.some.inj ht'
     subst htt
     by_cases hlx : l = x
     · subst hlx
@@ -321,22 +322,22 @@ theorem inv_pending {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config} (x : Lo
     · rw [cv_append,
         lastSetValOf_append_of_not_set (by simp [Label.tx, Label.isSetOn, hlx])]
       simp only [cvStep, if_neg hlx]
-      exact ih t ht
-  | @eend i t K he hl ht =>
+      exact ih _ rfl
+  | @eend σ _ t E snap body n =>
     intro t' ht'
     exact absurd ht' (by simp)
-  | @retry i t K he hl ht =>
+  | @retry σ _ t E snap body n =>
     intro t' ht'
     exact absurd ht' (by simp)
-  | @begin i e K he hl =>
+  | @begin σ θ E snap body n _ e =>
     intro t' ht'
-    have : C.nextTx = t' := Option.some.inj ht'
+    have : n = t' := Option.some.inj ht'
     subst this
     rw [cv_append, lastSetValOf_append_of_not_set (by simp [Label.isSetOn])]
     rw [lastSetValOf_eq_none
       (fun a ha => Nat.ne_of_lt ((inv_nextTx hrun).1 _ ha))]
     simp [cvStep]
-  | @adm i r e K he hloc =>
+  | @adm Cadm _ r e hloc =>
     intro t' ht'
     rw [cv_append, lastSetValOf_append_adm]
     exact ih t' ht'
@@ -395,9 +396,9 @@ theorem ext_get_value {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
   subst hsplit
   obtain ⟨D, D', hpre, hstep, _⟩ := Trace.locate h
   have hstore : D.store x = n := by
-    cases hstep with | @get i l v u K _ _ _ hv => exact hv
+    cases hstep with | ctx _ hh => cases hh with | @get σ _ u E snap body m l v hv => exact hv
   have hactive : D.activeTx = some t := by
-    cases hstep with | @get i l v u K _ _ ht _ => exact ht
+    cases hstep with | ctx _ hh => cases hh with | @get σ _ u E snap body m l v _ => rfl
   have hst : D.store x = (cv x pre).1 := by
     have h1 := (storeEnc_of_trace x hpre).1
     rw [inv_pending x hpre t hactive, hnoset] at h1
@@ -420,12 +421,14 @@ theorem inv_lock {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
     (by simp [initConfig]) ?_ h
   intro ls C ℓ C' _ ih hstep
   cases hstep with
-  | @begin i e K he hl => simp
-  | @get i l v t K he hl ht hv => exact ih
-  | @set i l v t K he hl ht => exact ih
-  | @eend i t K he hl ht => simp
-  | @retry i t K he hl ht => simp
-  | @adm i r e K he hloc => exact ih
+  | ctx _ hhead =>
+  cases hhead with
+  | @begin σ θ E snap body n _ e => simp
+  | @get σ _ t E snap body n l v hv => exact ih
+  | @set σ _ t E snap body n l v => exact ih
+  | @eend σ _ t E snap body n => simp
+  | @retry σ _ t E snap body n => simp
+  | @adm Cadm _ r e hloc => exact ih
 
 /-! ### Appending one label to a transaction's events -/
 
@@ -469,19 +472,21 @@ theorem inv_live_begin {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
     (by intro t ht; simp [initConfig] at ht) ?_ h
   intro ls C ℓ C' hrun ih hstep
   cases hstep with
-  | @begin i e K he hl =>
+  | ctx _ hhead =>
+  cases hhead with
+  | @begin σ θ E snap body n _ e =>
     intro t ht
-    have htn : C.nextTx = t := Option.some.inj ht
+    have htn : n = t := Option.some.inj ht
     subst htn
     -- the minted id is fresh, so `t`'s only event is this `begin`
-    have hempty : (transactionOf ls C.nextTx).events = [] := by
+    have hempty : (transactionOf ls n).events = [] := by
       simp only [transactionOf_events, List.filter_eq_nil_iff]
       intro a ha
       simp only [beq_iff_eq]
       exact Nat.ne_of_lt ((inv_nextTx hrun).1 _ ha)
-    refine ⟨⟨ls.length, .begin C.nextTx⟩, ?_, rfl, ?_⟩
-    · show (transactionOf (ls ++ [.ev (.begin C.nextTx)]) C.nextTx).events.head? = _
-      rw [transactionOf_append_eq ls (lbl := .begin C.nextTx) (s := C.nextTx) rfl,
+    refine ⟨⟨ls.length, .begin n⟩, ?_, rfl, ?_⟩
+    · show (transactionOf (ls ++ [.ev (.begin n)]) n).events.head? = _
+      rw [transactionOf_append_eq ls (lbl := .begin n) (s := n) rfl,
         hempty]
       rfl
     · intro c hc hterm
@@ -489,7 +494,7 @@ theorem inv_live_begin {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
       rcases List.mem_append.mp hc with h' | h'
       · exact id_lt_of_mem_traceEvents h'
       · simp at h'; subst h'; simp [Label.isTerminator] at hterm
-  | @get i l v t K he hl ht hv =>
+  | @get σ _ t E snap body n l v hv =>
     intro t' ht'
     obtain ⟨f, hmin, hlbl, hterm⟩ := ih t' ht'
     refine ⟨f, ?_, hlbl, ?_⟩
@@ -505,7 +510,7 @@ theorem inv_live_begin {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
       rcases List.mem_append.mp hc with h' | h'
       · exact hterm c h' hct
       · simp at h'; subst h'; simp [Label.isTerminator] at hct
-  | @set i l v t K he hl ht =>
+  | @set σ _ t E snap body n l v =>
     intro t' ht'
     obtain ⟨f, hmin, hlbl, hterm⟩ := ih t' ht'
     refine ⟨f, ?_, hlbl, ?_⟩
@@ -521,9 +526,9 @@ theorem inv_live_begin {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
       rcases List.mem_append.mp hc with h' | h'
       · exact hterm c h' hct
       · simp at h'; subst h'; simp [Label.isTerminator] at hct
-  | @eend i t K he hl ht => intro t' ht'; exact absurd ht' (by simp)
-  | @retry i t K he hl ht => intro t' ht'; exact absurd ht' (by simp)
-  | @adm i r e K he hloc =>
+  | @eend σ _ t E snap body n => intro t' ht'; exact absurd ht' (by simp)
+  | @retry σ _ t E snap body n => intro t' ht'; exact absurd ht' (by simp)
+  | @adm Cadm _ r e hloc =>
     intro t' ht'
     obtain ⟨f, hmin, hlbl, hterm⟩ := ih t' ht'
     refine ⟨f, ?_, hlbl, ?_⟩
@@ -586,19 +591,21 @@ theorem no_tag_after_terminator {E₀ : ThreadMap} {ℓs : List TLabel} {C : Con
       exact Nat.le_of_lt (id_lt_of_mem_traceEvents ha')
     · simp at hc' ha'; subst hc'; subst ha'; exact Nat.le_refl _
   cases hstep with
-  | @begin i e K he hl =>
-    refine main (.begin C.nextTx) ?_
+  | ctx _ hhead =>
+  cases hhead with
+  | @begin σ θ E snap body n _ e =>
+    refine main (.begin n) ?_
     intro c hc htx
     exact absurd htx (Nat.ne_of_lt ((inv_nextTx hrun).1 c hc))
-  | @get i l v t K he hl ht hv =>
-    exact main (.get l v t) (inv_no_terminator_live hrun t ht)
-  | @set i l v t K he hl ht =>
-    exact main (.set l v t) (inv_no_terminator_live hrun t ht)
-  | @eend i t K he hl ht =>
-    exact main (.eend t) (inv_no_terminator_live hrun t ht)
-  | @retry i t K he hl ht =>
-    exact main (.retry t) (inv_no_terminator_live hrun t ht)
-  | @adm i r e K he hloc =>
+  | @get σ _ t E snap body n l v hv =>
+    exact main (.get l v t) (inv_no_terminator_live hrun t rfl)
+  | @set σ _ t E snap body n l v =>
+    exact main (.set l v t) (inv_no_terminator_live hrun t rfl)
+  | @eend σ _ t E snap body n =>
+    exact main (.eend t) (inv_no_terminator_live hrun t rfl)
+  | @retry σ _ t E snap body n =>
+    exact main (.retry t) (inv_no_terminator_live hrun t rfl)
+  | @adm Cadm _ r e hloc =>
     intro c hc hct a ha hatx
     rw [traceEvents_append_adm] at hc ha
     exact ih c hc hct a ha hatx
@@ -807,21 +814,23 @@ theorem cv_fst_spec {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
         · exact .inl heq
         · exact .inr (by rw [termPos_congr hev', termPos_congr hev]; exact hlt)
   cases hstep with
-  | @begin i e K he hl =>
-    refine unchanged (.begin C.nextTx) ?_ rfl (by simp [cvStep])
+  | ctx _ hhead =>
+  cases hhead with
+  | @begin σ θ E snap body n _ e =>
+    refine unchanged (.begin n) ?_ rfl (by simp [cvStep])
     refine not_committed_of_no_events ?_
     simp only [transactionOf_events, List.filter_eq_nil_iff]
     intro a ha
     simp only [beq_iff_eq]
     exact Nat.ne_of_lt ((inv_nextTx hrun).1 _ ha)
-  | @get i l v t K he hl ht hv =>
-    exact unchanged (.get l v t) (inv_live_not_committed hrun t ht) rfl (by simp [cvStep])
-  | @set i l v t K he hl ht =>
-    refine unchanged (.set l v t) (inv_live_not_committed hrun t ht) rfl ?_
+  | @get σ _ t E snap body n l v hv =>
+    exact unchanged (.get l v t) (inv_live_not_committed hrun t rfl) rfl (by simp [cvStep])
+  | @set σ _ t E snap body n l v =>
+    refine unchanged (.set l v t) (inv_live_not_committed hrun t rfl) rfl ?_
     by_cases hlx : l = x <;> simp [cvStep, hlx]
-  | @retry i t K he hl ht =>
-    exact unchanged (.retry t) (inv_live_not_committed hrun t ht) rfl (by simp [cvStep])
-  | @adm i r e K he hloc =>
+  | @retry σ _ t E snap body n =>
+    exact unchanged (.retry t) (inv_live_not_committed hrun t rfl) rfl (by simp [cvStep])
+  | @adm Cadm _ r e hloc =>
     have hev : ∀ s, (transactionOf (ls ++ [TLabel.adm]) s).events
         = (transactionOf ls s).events := transactionOf_append_adm ls
     have hcv : cv x (ls ++ [TLabel.adm]) = cv x ls := by simp [cvStep]
@@ -837,9 +846,9 @@ theorem cv_fst_spec {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
         rcases hmax s' ((committedSetter_congr (hev s')).mp hcs') with heq | hlt
         · exact .inl heq
         · exact .inr (by rw [termPos_congr (hev s'), termPos_congr (hev s)]; exact hlt)
-  | @eend i t K he hl ht =>
+  | @eend σ _ t E snap body n =>
     -- `t` commits here: it becomes the AR-latest committed transaction
-    obtain ⟨f, hmin, hflbl, hterm⟩ := inv_live_begin hrun t ht
+    obtain ⟨f, hmin, hflbl, hterm⟩ := inv_live_begin hrun t rfl
     have hevT := transactionOf_append_eq ls (lbl := Label.eend t) (s := t) rfl
     have hmaxnew : (transactionOf (ls ++ [.ev (.eend t)]) t).maxPo
         = some ⟨ls.length, .eend t⟩ := maxPo_append_ev ls (.eend t)
@@ -851,12 +860,12 @@ theorem cv_fst_spec {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
     have hother : ∀ s, ¬ (t = s) →
         (transactionOf (ls ++ [.ev (.eend t)]) s).events
           = (transactionOf ls s).events := fun s hs => transactionOf_append_ne ls hs
-    have hnotc : ¬ (transactionOf ls t).Committed := inv_live_not_committed hrun t ht
+    have hnotc : ¬ (transactionOf ls t).Committed := inv_live_not_committed hrun t rfl
     have hlsv : (transactionOf (ls ++ [.ev (.eend t)]) t).lastSetVal x
         = lastSetValOf t x ls := by
       rw [lastSetVal_append_not_set ls t (by simp [Label.isSetOn]),
         lastSetVal_eq_lastSetValOf]
-    have hpend := inv_pending x hrun t ht
+    have hpend := inv_pending x hrun t rfl
     cases hp : (cv x ls).2 with
     | none =>
       have hcvnew : (cv x (ls ++ [.ev (.eend t)])).1 = (cv x ls).1 := by
@@ -970,7 +979,7 @@ theorem ar_of_termPos_lt {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
   subst hsplit
   obtain ⟨D, D', hpre, hstep, -⟩ := Trace.locate h
   have hact : D.activeTx = some s := by
-    cases hstep with | @eend i t K _ _ ht => exact ht
+    cases hstep with | ctx _ hh => cases hh with | @eend σ _ u E snap body m => rfl
   obtain ⟨f, hminf, hflbl, hterm⟩ := inv_live_begin hpre s hact
   -- `s'` terminated before `s`'s `end`, hence inside that prefix
   have hc'lt : c'.id < pre₁.length := by omega
@@ -1027,7 +1036,7 @@ theorem ext_historyOf {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
   -- `T`'s `begin`, and the fact that nothing has terminated since
   obtain ⟨D, D', hpre, hstep, -⟩ := Trace.locate h
   have hact : D.activeTx = some t := by
-    cases hstep with | @get i l v u K _ _ ht _ => exact ht
+    cases hstep with | ctx _ hh => cases hh with | @get σ _ u E snap body m l v _ => rfl
   obtain ⟨f, hminf, hflbl, hterm⟩ := inv_live_begin hpre t hact
   have hfmem : f ∈ traceEvents pre :=
     (List.mem_filter.mp (Transaction.minPo_mem hminf)).1

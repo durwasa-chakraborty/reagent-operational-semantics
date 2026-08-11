@@ -206,41 +206,43 @@ theorem inv_nextTx {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
     ⟨by simp [traceEvents, traceEventsFrom], by simp [initConfig]⟩ ?_ h
   rintro ls C ℓ C' _ ⟨ih1, ih2⟩ hstep
   cases hstep with
-  | @get i l v t K he hl ht hv =>
+  | ctx _ hhead =>
+  cases hhead with
+  | @get σ _ t E snap body n l v hv =>
     refine ⟨fun e he' => ?_, ih2⟩
     rw [traceEvents_append_ev] at he'
     rcases List.mem_append.mp he' with h' | h'
     · exact ih1 _ h'
-    · simp at h'; subst h'; exact ih2 _ ht
-  | @set i l v t K he hl ht =>
+    · simp at h'; subst h'; exact ih2 t rfl
+  | @set σ _ t E snap body n l v =>
     refine ⟨fun e he' => ?_, ih2⟩
     rw [traceEvents_append_ev] at he'
     rcases List.mem_append.mp he' with h' | h'
     · exact ih1 _ h'
-    · simp at h'; subst h'; exact ih2 _ ht
-  | @eend i t K he hl ht =>
+    · simp at h'; subst h'; exact ih2 t rfl
+  | @eend σ _ t E snap body n =>
     refine ⟨fun e he' => ?_, by simp⟩
     rw [traceEvents_append_ev] at he'
     rcases List.mem_append.mp he' with h' | h'
     · exact ih1 _ h'
-    · simp at h'; subst h'; exact ih2 _ ht
-  | @retry i t K he hl ht =>
+    · simp at h'; subst h'; exact ih2 t rfl
+  | @retry σ _ t E snap body n =>
     refine ⟨fun e he' => ?_, by simp⟩
     rw [traceEvents_append_ev] at he'
     rcases List.mem_append.mp he' with h' | h'
     · exact ih1 _ h'
-    · simp at h'; subst h'; exact ih2 _ ht
-  | @begin i eb K he hl =>
+    · simp at h'; subst h'; exact ih2 t rfl
+  | @begin σ θ E snap body n _ eb =>
     refine ⟨fun e he' => ?_, ?_⟩
     · rw [traceEvents_append_ev] at he'
       rcases List.mem_append.mp he' with h' | h'
       · exact Nat.lt_succ_of_lt (ih1 _ h')
       · simp at h'; subst h'; exact Nat.lt_succ_self _
     · intro t' ht'
-      have : C.nextTx = t' := Option.some.inj ht'
+      have : n = t' := Option.some.inj ht'
       subst this
       exact Nat.lt_succ_self _
-  | @adm i r eb K he hloc =>
+  | @adm Cadm _ r eb hloc =>
     -- no event is added, and neither `nextTx` nor `θ` moves
     refine ⟨fun e he' => ?_, ih2⟩
     rw [traceEvents_append_adm] at he'
@@ -257,13 +259,13 @@ theorem inv_store {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
     (by intro t ht; simp [initConfig] at ht) ?_ h
   intro ls C ℓ C' hrun ih hstep
   cases hstep with
-  | @get i l v t K he hl ht hv =>
+  | ctx _ hhead =>
+  cases hhead with
+  | @get σ _ t E snap body n l v hv =>
     intro t' ht' x v' hv'
-    have ht2 : C.activeTx = some t' := ht'
-    rw [ht] at ht2
-    have htt : t = t' := Option.some.inj ht2
+    have htt : t = t' := Option.some.inj ht'
     subst htt
-    show C.store x = v'
+    show σ x = v'
     by_cases hlx : l = x
     · subst hlx
       rw [lastAccessVal_append_of_access (by simp [Label.tx, Label.accesses])] at hv'
@@ -272,14 +274,12 @@ theorem inv_store {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
       exact hv
     · rw [lastAccessVal_append_of_not_access
         (by simp [Label.tx, Label.accesses, hlx])] at hv'
-      exact ih _ ht x v' hv'
-  | @set i l v t K he hl ht =>
+      exact ih _ rfl x v' hv'
+  | @set σ _ t E snap body n l v =>
     intro t' ht' x v' hv'
-    have ht2 : C.activeTx = some t' := ht'
-    rw [ht] at ht2
-    have htt : t = t' := Option.some.inj ht2
+    have htt : t = t' := Option.some.inj ht'
     subst htt
-    show update C.store l v x = v'
+    show update σ l v x = v'
     by_cases hlx : l = x
     · subst hlx
       rw [lastAccessVal_append_of_access (by simp [Label.tx, Label.accesses])] at hv'
@@ -289,24 +289,24 @@ theorem inv_store {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
     · rw [lastAccessVal_append_of_not_access
         (by simp [Label.tx, Label.accesses, hlx])] at hv'
       rw [update, if_neg (fun hc => hlx hc.symm)]
-      exact ih _ ht x v' hv'
-  | @begin i eb K he hl =>
+      exact ih _ rfl x v' hv'
+  | @begin σ θ E snap body n _ eb =>
     intro t' ht' x v' hv'
-    have : C.nextTx = t' := Option.some.inj ht'
+    have : n = t' := Option.some.inj ht'
     subst this
     rw [lastAccessVal_append_of_not_access (by simp [Label.accesses])] at hv'
     rw [lastAccessVal_eq_none
       (fun e he' => Nat.ne_of_lt ((inv_nextTx hrun).1 _ he'))] at hv'
     exact absurd hv' (by simp)
-  | @eend i t K he hl ht =>
+  | @eend σ _ t E snap body n =>
     intro t' ht' x v' hv'
     exact absurd ht' (by simp)
-  | @retry i t K he hl ht =>
+  | @retry σ _ t E snap body n =>
     -- `Retry` rolls the store back, but it clears `θ` in the same step, so no
     -- live transaction is left for the invariant to constrain
     intro t' ht' x v' hv'
     exact absurd ht' (by simp)
-  | @adm i r eb K he hloc =>
+  | @adm Cadm _ r eb hloc =>
     -- an administrative step touches neither the store nor `θ`, and adds no event
     intro t' ht' x v' hv'
     rw [lastAccessVal_append_adm] at hv'
@@ -413,15 +413,18 @@ theorem int_transactionOf {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
         have hℓ : ℓ' = Label.get x n s := hlabel
         subst hℓ
         cases hstep with
-        | @get i l v t2 K hthr hlam hth hst =>
+  | ctx _ hhead =>
+  cases hhead with
+        | @get σ _ t2 E snap bdy nn l v hst =>
           refine ⟨Transaction.accesses_of_maxPriorAccess ha, ?_⟩
           obtain ⟨w, hw⟩ := accessVal_isSome (Transaction.accesses_of_maxPriorAccess ha)
           have hlav : lastAccessVal s x ls = some w := by
             rw [lastAccessVal, ← priorAccesses_new ls (Label.get x n s) s x,
               ← Transaction.maxPriorAccess, ha]
             simpa using hw
-          have hcw := inv_store hrun s hth x w hlav
-          rw [hw, ← hcw, hst]
+          have hcw := inv_store hrun s rfl x w hlav
+          rw [hw, ← hcw]
+          exact congrArg some hst
 
 /-- The history of any trace satisfies `Int`. -/
 theorem int_historyOf {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
