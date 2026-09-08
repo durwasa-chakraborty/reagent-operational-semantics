@@ -1,0 +1,219 @@
+DECLARATIVE MODEL REBUILD — TASKS FOR THE WEEK
+==============================================
+
+Decided 2026-09-07.  Syntax.lean and Semantics.lean are CORRECT and frozen
+(including the uncommitted split / redex / replace work and Trans.of_plug).
+Everything downstream of them is being rebuilt.
+
+Old commit notes for the Head/ctx split: backed up outside the repo, still
+accurate, still uncommitted.  Commit that separately before starting.
+
+
+WHY
+---
+
+Trace.lean:169    def po (_T : Transaction) (a b : Event) : Prop := a.id < b.id
+                                ^^ unused
+
+`po` ignores the transaction and is `<` on global trace positions.  AR
+(Trace.lean:362) is the SAME relation between one transaction's max and
+another's min.  po and AR are one relation with two names, so nothing in the
+model distinguishes intra- from inter-transaction order.
+
+AR was never proved total — only irrefl / trans / asymm.  A pending
+transaction has no terminator, so it is AR-before nothing, and Ext's
+"AR-latest committed setter" is not well-defined over a non-total order.
+
+Hence: Int and Ext as stated are not the theorems we want.  Delete, rebuild.
+
+
+PRINCIPLE
+---------
+
+Declarative over definitional.  Define RELATIONS, not functions.  Properties
+we want should be hypotheses carried by a relation, not obligations recomputed
+at each use.  Choose definitions that make the proofs easy.
+
+
+---------------------------------------------------------------------------
+DAY 1 — teardown + the order type
+---------------------------------------------------------------------------
+
+[ ] 1.1  Delete Reagent/IntConsistency.lean, Reagent/ExtConsistency.lean, and
+         the stale untracked Reagent/Consistency.lean (byte-identical to
+         main's copy; leftover from the rename).  Drop both imports from
+         Reagent.lean.  Confirm `lake build` is green on Syntax + Semantics
+         + Trace alone.
+
+[ ] 1.2  Move `inductive Trace` out of Semantics.lean into Trace.lean.
+         Semantics defines steps; Trace defines runs.  Keep Trans/Head/Local
+         where they are.
+
+[ ] 1.3  New file Reagent/Order.lean.  A bundled type for a strict total
+         order on an arbitrary carrier:
+
+             structure StrictTotalOrder (α : Type) where
+               lt      : α → α → Prop
+               irrefl  : ∀ a, ¬ lt a a
+               trans   : ∀ {a b c}, lt a b → lt b c → lt a c
+               total   : ∀ a b, lt a b ∨ a = b ∨ lt b a
+
+         Decide explicitly whether `total` is trichotomy (exclusive) or plain
+         connectedness — trichotomy is what "latest" needs to be unique.
+         Prove asymm as a consequence, not a field.
+
+[ ] 1.4  In Order.lean, define what "greatest element of a subset" means for a
+         StrictTotalOrder, and prove it UNIQUE.  This is the lemma Ext's
+         "AR-latest committed setter" needs and never had.
+
+
+---------------------------------------------------------------------------
+DAY 2 — Transaction
+---------------------------------------------------------------------------
+
+[ ] 2.1  Status as an inductive, carried not derived:
+
+             inductive Status where
+               | committed | retried | uncommitted
+
+         Note there are now THREE, not the old Committed/¬Committed split.
+         Write down on paper what distinguishes retried from uncommitted
+         (terminator is a retry vs. no terminator at all) before coding.
+
+[ ] 2.2  Transaction as events-predicate + po-relation + status:
+
+             structure Transaction where
+               tx     : TxId
+               E      : Event → Prop
+               po     : Event → Event → Prop
+               status : Status
+
+         E is a PREDICATE — set membership, `E e`.  No list, no `sorted`
+         field, no `sameTx` field.  Every lemma that existed to defend those
+         two fields is deleted, not ported.
+
+[ ] 2.3  Decide: does `po` get bundled with its order properties (a
+         StrictTotalOrder on the subtype {e // E e}) or carried loose with
+         properties proved about constructed transactions?  Bundling is more
+         work at construction and free at use.  RECOMMEND bundling — the
+         whole point of Day 1.3.
+
+[ ] 2.4  po INDUCTIVELY.  Not `a.id < b.id`.  Sketch the constructors first:
+         base case is adjacency within the transaction's events in the trace,
+         then transitive closure.  Prove it is a strict total order on E.
+
+[ ] 2.5  transactionOf : Trace → TxId → Transaction, or the relational
+         version.  KEY REQUIREMENT: "every event of T carries tx" must hold
+         BY CONSTRUCTION — E is defined as `fun e => e ∈ τ ∧ e.label.tx = tx`
+         or similar, so the old sameTx obligation cannot even be stated.
+
+[ ] 2.6  Sanity: a run with one transaction, exhibit its E, po and status by
+         rfl / small proofs.  Do this NOW, not at the end.
+
+
+---------------------------------------------------------------------------
+DAY 3 — History and the trace-history relation
+---------------------------------------------------------------------------
+
+[ ] 3.1  History = set of transactions + AR:
+
+             structure History where
+               txs : Transaction → Prop
+               ar  : StrictTotalOrder Transaction   -- or on the subtype
+
+         txs is a predicate too, for the same reason E is.
+
+[ ] 3.2  Define real-time order on a trace: S ≺_rt T when S's terminator
+         precedes T's begin IN THE TRACE.  This is the ONLY place trace
+         positions may be mentioned.  It is a relation on transactions, and
+         it is PARTIAL — pending transactions order with nothing.  That
+         partiality is the whole reason AR must be a separate total order
+         that extends it rather than being computed.
+
+[ ] 3.3  HistoryOf : Trace → History → Prop, holding when
+           (a) H.txs is exactly the set of transactions of the trace,
+           (b) H.ar is a strict total order  (free, from the type),
+           (c) H.ar EXTENDS real-time order: S ≺_rt T → H.ar.lt S T.
+         Note (b) is discharged by the type, which is the payoff of Day 1.
+
+[ ] 3.4  OPEN QUESTION, resolve before coding 3.3.  Your note said "AR is
+         defined as a Trace x History ... doesn't make sense".  My reading:
+         AR lives INSIDE the History; HistoryOf is the trace-history relation
+         that constrains it; there is no AR : Trace x History.  Confirm or
+         correct this, it changes 3.1 and 3.3.
+
+
+---------------------------------------------------------------------------
+DAY 4 — ANTI-VACUITY.  Do not skip.
+---------------------------------------------------------------------------
+
+The new main theorem has the shape
+
+    ∀ τ H, HistoryOf τ H → H.Int ∧ H.Ext
+
+which is TRIVIALLY TRUE if HistoryOf never holds.  That is the same failure
+we are deleting Int/Ext for, relocated.  So:
+
+[ ] 4.1  theorem historyOf_exists : ∀ τ, Trace (initConfig E₀) τ C → ∃ H, HistoryOf τ H
+
+         Witness: AR := the trace's own terminator order, linearised.  This
+         is exactly the old `def AR` — deleted as a definition, resurrected
+         as a WITNESS.  That is the right role for it.
+
+[ ] 4.2  The witness must be shown TOTAL, which the old AR never was.  The
+         gap is pending transactions (no terminator).  Options: order them
+         last by begin position, or exclude them from H.txs.  Decide, and
+         write down why, because it is a real modelling choice.
+
+[ ] 4.3  Concrete non-vacuity: for the two-step example run, exhibit an H and
+         a proof of HistoryOf, by explicit term.  A theorem is not enough
+         here — an inhabitant is.
+
+
+---------------------------------------------------------------------------
+DAY 5 — Int and Ext, restated
+---------------------------------------------------------------------------
+
+[ ] 5.1  Restate Int against the new Transaction.  It should now read almost
+         literally as the paper: for e ∈ E with label get(x,n), if the set of
+         po-earlier accesses to x is non-empty, its po-greatest element
+         carries n.  "po-greatest" is Day 1.4's unique-greatest, not
+         `reverse.head?`.
+
+[ ] 5.2  Restate Ext.  "AR-latest committed setter" is now well-defined:
+         AR is total (type), greatest is unique (1.4), committed is a status
+         (2.1).
+
+[ ] 5.3  Port the store-tracking induction.  inv_store from the old
+         IntConsistency is the one piece of real content worth salvaging —
+         it never depended on po or AR, only on the semantics.  Read it out
+         of git before deleting the file.
+
+[ ] 5.4  theorem main : ∀ τ H, HistoryOf τ H → H.Int ∧ H.Ext
+
+
+---------------------------------------------------------------------------
+RUNNING CONSTRAINTS
+---------------------------------------------------------------------------
+
+- No definition may mention Event.id outside Day 3.2 (real-time order).  If
+  id arithmetic shows up anywhere else, the abstraction has leaked.
+
+- Every new inductive/structure gets a concrete inhabitant in Examples.lean
+  the same day it is written.  The old model was provable and vacuous for
+  exactly this reason: nothing was ever built.
+
+- Examples.lean stays in the build graph (Reagent.lean imports it).  Do not
+  let it fall out again.
+
+- `make axioms` will break as names change; fix at Day 5, not before.
+
+
+DEFERRED — not this week
+------------------------
+
+- retry drops the surrounding context (Begin saves e from `begin ; e`, Retry
+  re-arms with the context at the retry site).  Documented in Examples.lean.
+  Needs a spec decision in docs/reagent-correctness.tex first.
+- Multi-thread example runs.
+- Generalising initConfig to an arbitrary initial store.

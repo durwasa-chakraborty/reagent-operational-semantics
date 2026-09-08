@@ -105,25 +105,43 @@ inductive Head : ThId → Config → Expr → TLabel → Config → Expr → Pro
   | adm {C i r e} :
       Local r e → Head i C r .adm C e
 
-/-- Lifting a redex step into the transition system: the *only* rule that
-mentions an evaluation context. It locates thread `i`'s redex with `ECtx`,
-rewrites it in place, and frames the rest of the thread map. -/
+/-- Every redex a rule fires on really is one, in `split`'s sense. -/
+theorem Local.isRedex {r e : Expr} (h : Local r e) : r.IsRedex := by
+  cases h <;> rfl
+
+theorem Head.isRedex {i : ThId} {C C' : Config} {r r' : Expr} {ℓ : TLabel}
+    (h : Head i C r ℓ C' r') : r.IsRedex := by
+  cases h with
+  | adm hloc => exact hloc.isRedex
+  | _ => rfl
+
+/-- Lifting a redex step into the transition system.
+
+No evaluation context appears. `split` locates thread `i`'s redex and `replace`
+puts the result back where it was found — the context is *computed* from the
+thread's expression rather than guessed, which is legitimate because
+`Expr.split_of_plug` shows the decomposition is unique. `Trans.of_plug` below
+recovers the context-explicit form. -/
 inductive Trans : Config → TLabel → Config → Prop where
-  | ctx {C C' i r r' ℓ} {K : Ctx} :
-      C.threadMap i = K.plug r →
+  | ctx {C C' i r r' ℓ} :
+      (C.threadMap i).redex = some r →
       Head i C r ℓ C' r' →
-      Trans C ℓ { C' with threadMap := update C.threadMap i (K.plug r') }
+      Trans C ℓ
+        { C' with threadMap := update C.threadMap i ((C.threadMap i).replace r') }
 
-/-- A trace: the sequence of labels emitted along a run, administrative steps
-included. -/
-inductive Trace : Config → List TLabel → Config → Prop where
-  | nil  {C} : Trace C [] C
-  | cons {C ℓ C' w C''} : Trans C ℓ C' → Trace C' w C'' → Trace C (ℓ :: w) C''
-
-/-- The initial configuration `⟨σ₀, ⊥, ⊥, E₀, σ₀, ()⟩`, minting ids from `0`. -/
-def initConfig (E₀ : ThreadMap) : Config :=
-  { store := Store.init_store, activeThread := none, activeTx := none,
-    threadMap := E₀, snapshot := Store.init_store, savedBody := .val .unit,
-    nextTx := 0 }
+/-- The context-explicit introduction rule, recovered. Nothing was lost by
+dropping `K`: any decomposition of the thread's expression into a context and a
+redex a rule fires on gives a transition, with the result plugged back into that
+same context. -/
+theorem Trans.of_plug {C C' : Config} {i : ThId} {r r' : Expr} {ℓ : TLabel}
+    {K : Ctx} (he : C.threadMap i = K.plug r) (hh : Head i C r ℓ C' r') :
+    Trans C ℓ { C' with threadMap := update C.threadMap i (K.plug r') }
+    := by
+  have hr : r.IsRedex := hh.isRedex
+  have h1 : (C.threadMap i).redex = some r := by rw [he]; exact Expr.redex_plug hr
+  have h2 : (C.threadMap i).replace r' = K.plug r' := by
+    rw [he]; exact Expr.replace_plug hr r'
+  rw [← h2]
+  exact Trans.ctx h1 hh
 
 end Reagent
