@@ -4,3 +4,8 @@
 * Say I have 'add' a function definition would here is how add is implemented. Add can be implemented in anyway nand gate, lambda calculus, whatever implementations are many
 * A declarative 'add' would say it satisfies properties.
 ** $a + 0 = a$ is a property
+** $a + b = b + a$ is also a property and ofc
+** $a + S(b) = S(a + b)$ is something we saw in the class
+
+* Suppose I am clumsy and I say only Prop I and II are the declarative specifications of this $add$ function (which is wrong because then $add$ and $max$ become the same function)
+* Last week KN sir its upto us to define these properties. I am still not able to make peace with the fact that well what is guarding against from an incorrect definition. If humans can read definitions and machines can automate proofs then the axiom should be checkable somehow. Like axiom is a self evident proof. Who is guarding
