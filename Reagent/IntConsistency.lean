@@ -1,161 +1,61 @@
 /-
-  Internal consistency for Reagent (Section "Internal consistency").
+  Reagent — internal consistency (§Internal consistency, `docs/reagent-correctness.tex:545`).
 
-  Every trace of the operational semantics satisfies `Int`: for every read
-  `get(x,n)@t`, if the same transaction already accessed `x`, the
-  program-order-latest such access carries `n`.
+  Cerone et al.'s axiom:
 
-  The proof is a store-tracking induction. Within a transaction the store on `x`
-  equals the value of the latest earlier access to `x`, because the single lock
-  isolates the transaction and, since `retry` releases the lock as it rolls the
-  store back, no rollback ever happens *inside* a live transaction.
+      ∀ (E, po) ∈ H. ∀ e ∈ E. ∀ x, n.
+        ( e = (_, get(x,n))  ∧  po⁻¹(e) ∩ HEvent_x ≠ ∅ )
+          ⟹  max_po ( po⁻¹(e) ∩ HEvent_x ) = (_, _(x,n))
 
-  Administrative steps appear in traces but are not events, so they add nothing
-  to a transaction's `E` and disturb neither the store nor `θ` — they are
-  carried through the induction as no-ops.
+
 -/
 import Reagent.Trace
 
 namespace Reagent
 
-/-! ## Internal consistency (§Internal consistency) -/
+/-! ## The axiom -/
 
-/-- `HEvent_x`: the label is a `get` or `set` on `x`. -/
+/-- `HEvent_x`: the label is a read or a write on `x`. -/
 def Label.accesses (x : Loc) : Label → Bool
   | .get l _ _ => l == x
   | .set l _ _ => l == x
   | _          => false
 
-/-- The value a `get` or `set` carries; `none` otherwise. -/
+/-- The value a read or a write carries; `none` for `begin`/`eend`/`retry`. -/
 def Label.accessVal : Label → Option Nat
   | .get _ v _ => some v
   | .set _ v _ => some v
   | _          => none
 
-/-- `po⁻¹(e) ∩ HEvent_x`: the events of `T` that `po`-precede `e` and access `x`. -/
-def Transaction.priorAccesses (T : Transaction) (e : Event) (x : Loc) : List Event :=
-  T.events.filter (fun a => decide (a.id < e.id) && a.label.accesses x)
+/-- `a ∈ po⁻¹(e) ∩ HEvent_x`: within `T`, `a` strictly `po`-precedes `e` and
+accesses `x`.
 
-/-- `max_po(po⁻¹(e) ∩ HEvent_x)`; `none` exactly when that set is empty. -/
-def Transaction.maxPriorAccess (T : Transaction) (e : Event) (x : Loc) : Option Event :=
-  (T.priorAccesses e x).reverse.head?
+`T.po` is reflexive (`IsTotalOrder`), so the strictness of `po⁻¹` is spelled
+out as `a ≠ e`. -/
+def Transaction.PriorAccess (T : Transaction) (x : Loc) (a e : Subtype T.E) : Prop :=
+  T.po a e ∧ a ≠ e ∧ a.val.label.accesses x = true
 
-/-- Internal consistency for a single transaction:
+/-- `a = max_po ( po⁻¹(e) ∩ HEvent_x )`.
 
-`∀ e ∈ E. ∀ x n. (e = (_, get(x,n)) ∧ po⁻¹(e) ∩ HEvent_x ≠ ∅)
-   ⟹ max_po(po⁻¹(e) ∩ HEvent_x) = (_, _(x,n))`
+NOTE `a` is the last thing a transaction did to x before e. -/
+def Transaction.MaxPriorAccess (T : Transaction) (x : Loc) (e a : Subtype T.E) : Prop :=
+  T.PriorAccess x a e ∧ ∀ b, T.PriorAccess x b e → T.po b a
 
-The non-emptiness premise is carried by `maxPriorAccess … = some a`: on an empty
-set `maxPriorAccess` is `none` and the statement is vacuous. The conclusion
-`(_, _(x,n))` is spelled out as its two parts — the event accesses `x`, and the
-value it carries is `n`. -/
+/-- **Int** for a single transaction. Verbatim -/
 def Transaction.Int (T : Transaction) : Prop :=
-  ∀ e ∈ T.events, ∀ x n t, e.label = .get x n t →
-    ∀ a, T.maxPriorAccess e x = some a →
-      a.label.accesses x = true ∧ a.label.accessVal = some n
+  ∀ (e : Subtype T.E) (x n : Nat) (t : TxId),
+    e.val.label = .get x n t →
+    ∀ a : Subtype T.E, T.MaxPriorAccess x e a → a.val.label.accessVal = some n
 
-/-- `Int` for a history, ranging over *every* transaction of the trace,
-committed or not — committedness never enters (§Internal consistency). -/
-def History.Int (H : History) : Prop := ∀ T ∈ H.txs, T.Int
+/-- `H ⊨ Int`.  Every transaction of `H`, committed or not  `T.status` never
+enters (§ Internal consistency, first example). -/
+def History.Int (H : History) : Prop := ∀ T, H.txs T → T.Int
 
-/-! ### Trace-level machinery for the proof -/
+/-! ## The machine half
 
-/-- The `t`-tagged accesses to `x` in `ℓs`, in trace order. -/
-def accessesOf (t : TxId) (x : Loc) (ℓs : List TLabel) : List Event :=
-  (traceEvents ℓs).filter (fun a => a.label.tx == t && a.label.accesses x)
-
-/-- The value of the `po`-last `t`-tagged access to `x` in `ℓs`. -/
-def lastAccessVal (t : TxId) (x : Loc) (ℓs : List TLabel) : Option Nat :=
-  ((accessesOf t x ℓs).reverse.head?).bind (fun a => a.label.accessVal)
-
-/-! Extending a trace by one label: a transition label contributes one event, at
-position `|ℓs|`; an administrative step contributes none, though it still
-advances the position counter. -/
-
-theorem traceEventsFrom_append_ev (s : Nat) (ℓs : List TLabel) (ℓ : Label) :
-    traceEventsFrom s (ℓs ++ [.ev ℓ])
-      = traceEventsFrom s ℓs ++ [⟨s + ℓs.length, ℓ⟩] := by
-  induction ℓs generalizing s with
-  | nil => simp [traceEventsFrom]
-  | cons a as ih =>
-    have hs : s + 1 + as.length = s + (as.length + 1) := by omega
-    cases a with
-    | adm  => simp [traceEventsFrom, ih (s + 1), hs]
-    | ev _ => simp [traceEventsFrom, ih (s + 1), hs]
-
-theorem traceEventsFrom_append_adm (s : Nat) (ℓs : List TLabel) :
-    traceEventsFrom s (ℓs ++ [.adm]) = traceEventsFrom s ℓs := by
-  induction ℓs generalizing s with
-  | nil => simp [traceEventsFrom]
-  | cons a as ih =>
-    cases a with
-    | adm  => simp [traceEventsFrom, ih (s + 1)]
-    | ev _ => simp [traceEventsFrom, ih (s + 1)]
-
-theorem traceEvents_append_ev (ℓs : List TLabel) (ℓ : Label) :
-    traceEvents (ℓs ++ [.ev ℓ]) = traceEvents ℓs ++ [⟨ℓs.length, ℓ⟩] := by
-  simpa [traceEvents] using traceEventsFrom_append_ev 0 ℓs ℓ
-
-theorem traceEvents_append_adm (ℓs : List TLabel) :
-    traceEvents (ℓs ++ [.adm]) = traceEvents ℓs :=
-  traceEventsFrom_append_adm 0 ℓs
-
-theorem id_lt_of_mem_traceEventsFrom {s : Nat} {ℓs : List TLabel} {e : Event}
-    (h : e ∈ traceEventsFrom s ℓs) : e.id < s + ℓs.length := by
-  induction ℓs generalizing s with
-  | nil => cases h
-  | cons a as ih =>
-    cases a with
-    | adm => have := ih h; simp; omega
-    | ev _ =>
-      cases h with
-      | head => simp
-      | tail _ h => have := ih h; simp; omega
-
-theorem id_lt_of_mem_traceEvents {ℓs : List TLabel} {e : Event}
-    (h : e ∈ traceEvents ℓs) : e.id < ℓs.length := by
-  simpa using id_lt_of_mem_traceEventsFrom (s := 0) h
-
-theorem accessesOf_append_ev (t : TxId) (x : Loc) (ℓs : List TLabel) (ℓ : Label) :
-    accessesOf t x (ℓs ++ [.ev ℓ]) =
-      accessesOf t x ℓs ++
-        (if ℓ.tx == t && ℓ.accesses x then [(⟨ℓs.length, ℓ⟩ : Event)] else []) := by
-  simp only [accessesOf, traceEvents_append_ev, List.filter_append]
-  congr 1
-  by_cases h : (ℓ.tx == t && ℓ.accesses x) = true <;> simp [h]
-
-theorem accessesOf_append_adm (t : TxId) (x : Loc) (ℓs : List TLabel) :
-    accessesOf t x (ℓs ++ [.adm]) = accessesOf t x ℓs := by
-  simp only [accessesOf, traceEvents_append_adm]
-
-theorem lastAccessVal_append_of_access {t : TxId} {x : Loc} {ℓs : List TLabel}
-    {ℓ : Label} (h : (ℓ.tx == t && ℓ.accesses x) = true) :
-    lastAccessVal t x (ℓs ++ [.ev ℓ]) = ℓ.accessVal := by
-  simp [lastAccessVal, accessesOf_append_ev, h]
-
-theorem lastAccessVal_append_of_not_access {t : TxId} {x : Loc} {ℓs : List TLabel}
-    {ℓ : Label} (h : (ℓ.tx == t && ℓ.accesses x) = false) :
-    lastAccessVal t x (ℓs ++ [.ev ℓ]) = lastAccessVal t x ℓs := by
-  simp [lastAccessVal, accessesOf_append_ev, h]
-
-/-- An administrative step leaves the accesses, and so the last access value,
-untouched. -/
-theorem lastAccessVal_append_adm (t : TxId) (x : Loc) (ℓs : List TLabel) :
-    lastAccessVal t x (ℓs ++ [.adm]) = lastAccessVal t x ℓs := by
-  simp [lastAccessVal, accessesOf_append_adm]
-
-/-- If no event of `ℓs` is tagged `t`, that transaction has no accesses. -/
-theorem accessesOf_eq_nil {t : TxId} {x : Loc} {ℓs : List TLabel}
-    (h : ∀ e ∈ traceEvents ℓs, e.label.tx ≠ t) : accessesOf t x ℓs = [] := by
-  simp only [accessesOf, List.filter_eq_nil_iff]
-  intro a ha
-  simp only [Bool.and_eq_true, beq_iff_eq, not_and]
-  intro htx
-  exact absurd htx (h _ ha)
-
-theorem lastAccessVal_eq_none {t : TxId} {x : Loc} {ℓs : List TLabel}
-    (h : ∀ e ∈ traceEvents ℓs, e.label.tx ≠ t) : lastAccessVal t x ℓs = none := by
-  simp [lastAccessVal, accessesOf_eq_nil h]
+Everything below is about `τ` and the configuration only; no `History` appears.
+Ported from `archive/IntConsistency.pre-declarative.lean`, restated on positions
+of `τ` rather than on the old `traceEvents` list. -/
 
 /-- A run splits at any point where its trace does. -/
 theorem Trace.split {C₀ C'' : Config} {pre post : List TLabel}
@@ -194,240 +94,268 @@ theorem Trace.reverseRecOn {C₀ : Config} {motive : List TLabel → Config → 
       cases hrest
       exact ind ls C' ℓ C h1 (ih h1) hstep
 
+/-- Reading position `i` of a snoc: either it is a position of the prefix, or it
+is the appended element itself. -/
+theorem getElem?_snoc {α : Type} {l : List α} {a b : α} {i : Nat}
+    (h : (l ++ [a])[i]? = some b) : l[i]? = some b ∨ (i = l.length ∧ a = b) := by
+  rcases Nat.lt_or_ge i l.length with hi | hi
+  · left; rwa [List.getElem?_append_left hi] at h
+  · rw [List.getElem?_append_right hi] at h
+    rcases Nat.eq_or_lt_of_le hi with he | he
+    · subst he
+      exact Or.inr ⟨rfl, by simpa using h⟩
+    · exfalso
+      have h1 : [a].length ≤ i - l.length := by simp; omega
+      rw [List.getElem?_eq_none h1] at h
+      simp at h
+
+/-- A position of the prefix is the same position of the snoc. -/
+theorem getElem?_snoc_left {α : Type} {l : List α} {a b : α} {k : Nat}
+    (h : l[k]? = some b) : (l ++ [a])[k]? = some b := by
+  have hk : k < l.length := by
+    rcases Nat.lt_or_ge k l.length with hlt | hge
+    · exact hlt
+    · rw [List.getElem?_eq_none hge] at h; simp at h
+  rw [List.getElem?_append_left hk]; exact h
+
 /-- Every transaction id occurring in the trace so far, and the live one, lies
-below `nextTx`. This is what makes `Begin`'s minted id genuinely fresh. -/
-theorem inv_nextTx {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
-    (h : Trace (initConfig E₀) ℓs C) :
-    (∀ e ∈ traceEvents ℓs, e.label.tx < C.nextTx) ∧
+below `nextTx`.  This is what makes `Begin`'s minted id genuinely fresh, and it
+is what makes a newly begun transaction have no history. -/
+theorem inv_nextTx {E₀ : ThreadMap} {τ : List TLabel} {C : Config}
+    (h : Trace (initConfig E₀) τ C) :
+    (∀ (i : Nat) (lb : Label), τ[i]? = some (TLabel.ev lb) → lb.tx < C.nextTx) ∧
       (∀ t, C.activeTx = some t → t < C.nextTx) := by
-  refine Trace.reverseRecOn (motive := fun ℓs C =>
-      (∀ e ∈ traceEvents ℓs, e.label.tx < C.nextTx) ∧
+  refine Trace.reverseRecOn (motive := fun τ C =>
+      (∀ (i : Nat) (lb : Label), τ[i]? = some (TLabel.ev lb) → lb.tx < C.nextTx) ∧
         (∀ t, C.activeTx = some t → t < C.nextTx))
-    ⟨by simp [traceEvents, traceEventsFrom], by simp [initConfig]⟩ ?_ h
-  rintro ls C ℓ C' _ ⟨ih1, ih2⟩ hstep
+    ⟨by simp, by simp [initConfig]⟩ ?_ h
+  rintro ls C m C' _ ⟨ih1, ih2⟩ hstep
   cases hstep with
-  | @get i l v t K he hl ht hv =>
-    refine ⟨fun e he' => ?_, ih2⟩
-    rw [traceEvents_append_ev] at he'
-    rcases List.mem_append.mp he' with h' | h'
-    · exact ih1 _ h'
-    · simp at h'; subst h'; exact ih2 _ ht
-  | @set i l v t K he hl ht =>
-    refine ⟨fun e he' => ?_, ih2⟩
-    rw [traceEvents_append_ev] at he'
-    rcases List.mem_append.mp he' with h' | h'
-    · exact ih1 _ h'
-    · simp at h'; subst h'; exact ih2 _ ht
-  | @eend i t K he hl ht =>
-    refine ⟨fun e he' => ?_, by simp⟩
-    rw [traceEvents_append_ev] at he'
-    rcases List.mem_append.mp he' with h' | h'
-    · exact ih1 _ h'
-    · simp at h'; subst h'; exact ih2 _ ht
-  | @retry i t K he hl ht =>
-    refine ⟨fun e he' => ?_, by simp⟩
-    rw [traceEvents_append_ev] at he'
-    rcases List.mem_append.mp he' with h' | h'
-    · exact ih1 _ h'
-    · simp at h'; subst h'; exact ih2 _ ht
-  | @begin i eb K he hl =>
-    refine ⟨fun e he' => ?_, ?_⟩
-    · rw [traceEvents_append_ev] at he'
-      rcases List.mem_append.mp he' with h' | h'
-      · exact Nat.lt_succ_of_lt (ih1 _ h')
-      · simp at h'; subst h'; exact Nat.lt_succ_self _
+  | ctx _ hhead =>
+  cases hhead with
+  | @get σ i t E snap body n l v hv =>
+    refine ⟨fun k lb hk => ?_, ih2⟩
+    rcases getElem?_snoc hk with h' | ⟨_, h'⟩
+    · exact ih1 _ _ h'
+    · cases h'; exact ih2 t rfl
+  | @set σ i t E snap body n l v =>
+    refine ⟨fun k lb hk => ?_, ih2⟩
+    rcases getElem?_snoc hk with h' | ⟨_, h'⟩
+    · exact ih1 _ _ h'
+    · cases h'; exact ih2 t rfl
+  | @eend σ i t E snap body n =>
+    refine ⟨fun k lb hk => ?_, by simp⟩
+    rcases getElem?_snoc hk with h' | ⟨_, h'⟩
+    · exact ih1 _ _ h'
+    · cases h'; exact ih2 t rfl
+  | @retry σ i t E snap body n =>
+    refine ⟨fun k lb hk => ?_, by simp⟩
+    rcases getElem?_snoc hk with h' | ⟨_, h'⟩
+    · exact ih1 _ _ h'
+    · cases h'; exact ih2 t rfl
+  | @begin σ θ E snap body n i eb =>
+    refine ⟨fun k lb hk => ?_, ?_⟩
+    · rcases getElem?_snoc hk with h' | ⟨_, h'⟩
+      · exact Nat.lt_succ_of_lt (ih1 _ _ h')
+      · cases h'; exact Nat.lt_succ_self _
     · intro t' ht'
-      have : C.nextTx = t' := Option.some.inj ht'
+      have : n = t' := Option.some.inj ht'
       subst this
       exact Nat.lt_succ_self _
-  | @adm i r eb K he hloc =>
-    -- no event is added, and neither `nextTx` nor `θ` moves
-    refine ⟨fun e he' => ?_, ih2⟩
-    rw [traceEvents_append_adm] at he'
-    exact ih1 _ he'
+  | @adm Cadm i r eb hloc =>
+    refine ⟨fun k lb hk => ?_, ih2⟩
+    rcases getElem?_snoc hk with h' | ⟨_, h'⟩
+    · exact ih1 _ _ h'
+    · exact absurd h' (by simp)
 
-/-- The store agrees with the `po`-last access made by the *live* transaction.
-This is the semantic content of `Int`: a `get` reads what its own transaction
-last left at that location. -/
-theorem inv_store {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
-    (h : Trace (initConfig E₀) ℓs C) :
-    ∀ t, C.activeTx = some t → ∀ x v, lastAccessVal t x ℓs = some v → C.store x = v := by
-  refine Trace.reverseRecOn (motive := fun ℓs C =>
-      ∀ t, C.activeTx = some t → ∀ x v, lastAccessVal t x ℓs = some v → C.store x = v)
+/-- **The store agrees with the live transaction's last access.**
+
+If `t` is the transaction currently holding the lock, then for every location
+`x`, the value in the store is the one carried by the `po`-last `t`-tagged
+access to `x` in the trace so far.  This is the semantic content of `Int`.
+
+The lock discipline is what makes it true, and it is spent in two cases:
+`begin` mints an id below which nothing in the trace can be tagged
+(`inv_nextTx`), so a fresh transaction has no history to disagree with; and
+`retry`, which rolls the store back, clears `activeTx` in the *same* step, so no
+rollback ever lands inside a live transaction.  `eend` likewise leaves no live
+transaction for the invariant to constrain. -/
+theorem inv_store {E₀ : ThreadMap} {τ : List TLabel} {C : Config}
+    (h : Trace (initConfig E₀) τ C) :
+    ∀ t, C.activeTx = some t → ∀ (x : Loc) (j : Nat) (lb : Label),
+      τ[j]? = some (TLabel.ev lb) → lb.tx = t → lb.accesses x = true →
+      (∀ (k : Nat) (lb' : Label), τ[k]? = some (TLabel.ev lb') → lb'.tx = t →
+        lb'.accesses x = true → k ≤ j) →
+      lb.accessVal = some (C.store x) := by
+  refine Trace.reverseRecOn (motive := fun τ C =>
+      ∀ t, C.activeTx = some t → ∀ (x : Loc) (j : Nat) (lb : Label),
+        τ[j]? = some (TLabel.ev lb) → lb.tx = t → lb.accesses x = true →
+        (∀ (k : Nat) (lb' : Label), τ[k]? = some (TLabel.ev lb') → lb'.tx = t →
+          lb'.accesses x = true → k ≤ j) →
+        lb.accessVal = some (C.store x))
     (by intro t ht; simp [initConfig] at ht) ?_ h
-  intro ls C ℓ C' hrun ih hstep
+  intro ls C m C' hrunls ih hstep
   cases hstep with
-  | @get i l v t K he hl ht hv =>
-    intro t' ht' x v' hv'
-    have ht2 : C.activeTx = some t' := ht'
-    rw [ht] at ht2
-    have htt : t = t' := Option.some.inj ht2
+  | ctx _ hhead =>
+  cases hhead with
+  | @get σ i t E snap body n l v hv =>
+    intro t' ht' x j lb hj htag hacc hmax
+    have htt : t = t' := Option.some.inj ht'
     subst htt
-    show C.store x = v'
     by_cases hlx : l = x
     · subst hlx
-      rw [lastAccessVal_append_of_access (by simp [Label.tx, Label.accesses])] at hv'
-      simp only [Label.accessVal, Option.some.injEq] at hv'
-      subst hv'
-      exact hv
-    · rw [lastAccessVal_append_of_not_access
-        (by simp [Label.tx, Label.accesses, hlx])] at hv'
-      exact ih _ ht x v' hv'
-  | @set i l v t K he hl ht =>
-    intro t' ht' x v' hv'
-    have ht2 : C.activeTx = some t' := ht'
-    rw [ht] at ht2
-    have htt : t = t' := Option.some.inj ht2
+      have hle := hmax ls.length (Label.get l v t) (by simp) rfl (by simp [Label.accesses])
+      rcases getElem?_snoc hj with h' | ⟨hjlen, h'⟩
+      · exfalso
+        have hj' : j < ls.length := by
+          rcases Nat.lt_or_ge j ls.length with hlt | hge
+          · exact hlt
+          · rw [List.getElem?_eq_none hge] at h'; simp at h'
+        omega
+      · cases h'; simp [Label.accessVal, hv]
+    · rcases getElem?_snoc hj with h' | ⟨hjlen, h'⟩
+      · exact ih t rfl x j lb h' htag hacc
+          (fun k lb' hk => hmax k lb' (getElem?_snoc_left hk))
+      · exfalso; cases h'; simp [Label.accesses, hlx] at hacc
+  | @set σ i t E snap body n l v =>
+    intro t' ht' x j lb hj htag hacc hmax
+    have htt : t = t' := Option.some.inj ht'
     subst htt
-    show update C.store l v x = v'
     by_cases hlx : l = x
     · subst hlx
-      rw [lastAccessVal_append_of_access (by simp [Label.tx, Label.accesses])] at hv'
-      simp only [Label.accessVal, Option.some.injEq] at hv'
-      subst hv'
-      simp [update]
-    · rw [lastAccessVal_append_of_not_access
-        (by simp [Label.tx, Label.accesses, hlx])] at hv'
-      rw [update, if_neg (fun hc => hlx hc.symm)]
-      exact ih _ ht x v' hv'
-  | @begin i eb K he hl =>
-    intro t' ht' x v' hv'
-    have : C.nextTx = t' := Option.some.inj ht'
-    subst this
-    rw [lastAccessVal_append_of_not_access (by simp [Label.accesses])] at hv'
-    rw [lastAccessVal_eq_none
-      (fun e he' => Nat.ne_of_lt ((inv_nextTx hrun).1 _ he'))] at hv'
-    exact absurd hv' (by simp)
-  | @eend i t K he hl ht =>
-    intro t' ht' x v' hv'
-    exact absurd ht' (by simp)
-  | @retry i t K he hl ht =>
-    -- `Retry` rolls the store back, but it clears `θ` in the same step, so no
-    -- live transaction is left for the invariant to constrain
-    intro t' ht' x v' hv'
-    exact absurd ht' (by simp)
-  | @adm i r eb K he hloc =>
-    -- an administrative step touches neither the store nor `θ`, and adds no event
-    intro t' ht' x v' hv'
-    rw [lastAccessVal_append_adm] at hv'
-    exact ih t' ht' x v' hv'
+      have hle := hmax ls.length (Label.set l v t) (by simp) rfl (by simp [Label.accesses])
+      rcases getElem?_snoc hj with h' | ⟨hjlen, h'⟩
+      · exfalso
+        have hj' : j < ls.length := by
+          rcases Nat.lt_or_ge j ls.length with hlt | hge
+          · exact hlt
+          · rw [List.getElem?_eq_none hge] at h'; simp at h'
+        omega
+      · cases h'; simp [Label.accessVal, update]
+    · rcases getElem?_snoc hj with h' | ⟨hjlen, h'⟩
+      · have := ih t rfl x j lb h' htag hacc
+          (fun k lb' hk => hmax k lb' (getElem?_snoc_left hk))
+        rw [this]
+        show some (σ x) = some (update σ l v x)
+        rw [update, if_neg (fun hc => hlx hc.symm)]
+      · exfalso; cases h'; simp [Label.accesses, hlx] at hacc
+  | @begin σ θ E snap body n i eb =>
+    intro t' ht' x j lb hj htag hacc hmax
+    have hn : n = t' := Option.some.inj ht'
+    subst hn
+    exfalso
+    rcases getElem?_snoc hj with h' | ⟨hjlen, h'⟩
+    · have hlt := (inv_nextTx hrunls).1 j lb h'
+      rw [htag] at hlt
+      exact Nat.lt_irrefl _ hlt
+    · cases h'; simp [Label.accesses] at hacc
+  | @eend σ i t E snap body n =>
+    intro t' ht'; exact absurd ht' (by simp)
+  | @retry σ i t E snap body n =>
+    intro t' ht'; exact absurd ht' (by simp)
+  | @adm Cadm i r eb hloc =>
+    intro t' ht' x j lb hj htag hacc hmax
+    rcases getElem?_snoc hj with h' | ⟨hjlen, h'⟩
+    · exact ih t' ht' x j lb h' htag hacc
+        (fun k lb' hk => hmax k lb' (getElem?_snoc_left hk))
+    · exact absurd h' (by simp)
 
-@[simp] theorem transactionOf_events (ℓs : List TLabel) (t : TxId) :
-    (transactionOf ℓs t).events
-      = (traceEvents ℓs).filter (fun e => e.label.tx == t) := rfl
+/-! ## The theorem -/
 
-theorem Transaction.mem_of_maxPriorAccess {T : Transaction} {e a : Event} {x : Loc}
-    (h : T.maxPriorAccess e x = some a) : a ∈ T.priorAccesses e x :=
-  List.mem_reverse.mp (head?_mem h)
+/-- **Internal consistency.**
 
-theorem Transaction.accesses_of_maxPriorAccess {T : Transaction} {e a : Event}
-    {x : Loc} (h : T.maxPriorAccess e x = some a) : a.label.accesses x = true := by
-  have hm := List.mem_filter.mp (mem_of_maxPriorAccess h)
-  simpa using (Bool.and_eq_true _ _ |>.mp hm.2).2
+    ∀ τ, ∀ H.  Trace C_init τ C'  ∧  HistoryOf τ H  ⟹  H ⊨ Int
 
-/-- An event that accesses a location carries a value. -/
-theorem accessVal_isSome {ℓ : Label} {x : Loc} (h : ℓ.accesses x = true) :
-    ∃ v, ℓ.accessVal = some v := by
-  cases ℓ with
-  | begin _   => simp [Label.accesses] at h
-  | eend _    => simp [Label.accesses] at h
-  | retry _   => simp [Label.accesses] at h
-  | get l v t => exact ⟨v, rfl⟩
-  | set l v t => exact ⟨v, rfl⟩
+ -/
 
-/-- `po⁻¹(e) ∩ HEvent_x` as a single filter over the trace's events. -/
-theorem priorAccesses_eq (L : List TLabel) (t : TxId) (e : Event) (x : Loc) :
-    (transactionOf L t).priorAccesses e x
-      = (traceEvents L).filter
-          (fun a => decide (a.id < e.id) && a.label.accesses x && (a.label.tx == t)) := by
-  simp only [Transaction.priorAccesses, transactionOf_events, List.filter_filter]
+theorem int_of_trace {E₀ : ThreadMap} {τ : List TLabel} {C' : Config} {H : History}
+    (hrun : Trace (initConfig E₀) τ C') (hH : HistoryOf τ H) : H.Int := by
+    intro T hT e x n t hlabel -- a transaction,
+    intro a hmax              -- po last access to x before it
+    obtain ⟨pos, hat, hinj, hcov, hpo⟩ := hH.placed
+    have he_at := (hat T hT e.val e.property).1
+    have ha_at := (hat T hT a.val a.property).1
+    rw [hlabel] at he_at
+    obtain ⟨⟨hae, hne, hacc⟩, hgreatest⟩ := hmax
+    have hle : pos a.val ≤ pos e.val := (hpo T hT a e).1 hae
+    have hlt : pos a.val < pos e.val := Nat.lt_of_le_of_ne hle (fun heq => hne (Subtype.ext (hinj _ _ heq)))
+    have hlast : ∀ k ℓ', k < pos e.val → τ[k]? = some (.ev ℓ') →
+        ℓ'.tx = t → ℓ'.accesses x = true → k ≤ pos a.val := by
+      intro k l' hk hkat htag hkacc
+      -- `hcov` wants `isAccess`, we hold `accesses x`; for begin/eend/retry the
+      -- latter is already false, so those cases close themselves
+      have hacc' : l'.isAccess = true := by
+        cases l' <;> simp_all [Label.accesses, Label.isAccess]
+      -- something of `H` sits at `k` — but not necessarily something of `T`
+      obtain ⟨T', b, hT', hbT', hbpos⟩ := hcov k l' hkat hacc'
+      have hb_at := (hat T' hT' b hbT').1
+      rw [hbpos] at hb_at
+      have hblab : b.label = l' := by simpa using hb_at.symm.trans hkat
+      -- both transactions carry tag `t`, so they are the same transaction
+      have hTT : T' = T := by
+        refine hH.one_per_tag T' T hT' hT t ⟨b, hbT', ?_⟩ ⟨e.val, e.property, ?_⟩
+        · rw [hblab]; exact htag
+        · rw [hlabel]; rfl
+      subst hTT
+      -- so `b` is an event of `T`, and it is a prior access to `x`
+      have hbne : pos b ≠ pos e.val := by rw [hbpos]; exact Nat.ne_of_lt hk
+      have hprior : T'.PriorAccess x ⟨b, hbT'⟩ e := by
+        refine ⟨(hpo T' hT' ⟨b, hbT'⟩ e).2 ?_, ?_, ?_⟩
+        · rw [hbpos]; exact Nat.le_of_lt hk
+        · exact fun heq => hbne (congrArg (fun z => pos z.val) heq)
+        · rw [hblab]; exact hkacc
+      -- `hgreatest` applies, and `hpo` carries the answer back to positions
+      have := (hpo T' hT' ⟨b, hbT'⟩ a).1 (hgreatest ⟨b, hbT'⟩ hprior)
+      rw [hbpos] at this
+      exact this
+    have hatag : a.val.label.tx = t := by
+      have := hH.events_tagged T hT a.val e.val a.property e.property
+      rw [this, hlabel]; rfl
+    -- split the run immediately before the `get`
+    have hilen : pos e.val < τ.length := by
+      rcases Nat.lt_or_ge (pos e.val) τ.length with hlt | hge
+      · exact hlt
+      · rw [List.getElem?_eq_none hge] at he_at; simp at he_at
+    have hsplit : τ = τ.take (pos e.val) ++ τ.drop (pos e.val) :=
+      (List.take_append_drop _ _).symm
+    rw [hsplit] at hrun
+    obtain ⟨Cm, hpre, hpost⟩ := Trace.split hrun
+    -- the suffix begins with that very `get`
+    have hdrop : τ.drop (pos e.val) = τ[pos e.val] :: τ.drop (pos e.val + 1) :=
+      List.drop_eq_getElem_cons hilen
+    have hhd : τ[pos e.val] = TLabel.ev (Label.get x n t) := by
+      have := he_at; rw [List.getElem?_eq_getElem hilen] at this; simpa using this
+    rw [hdrop, hhd] at hpost
+    cases hpost with
+    | cons hstep _ =>
+    cases hstep with
+    | ctx _ hhead =>
+    cases hhead with
+    | @get σ th t' E snap body nn l v hv =>
+      -- so at that moment `t` held the lock and the store carried `n` at `x`
+      refine inv_store hpre t rfl x (pos a.val) a.val.label ?_ hatag hacc ?_ |>.trans ?_
+      · rw [List.getElem?_take, if_pos hlt]; exact ha_at
+      · intro k lb' hk htag' hacc'
+        have hklt : k < pos e.val := by
+          rcases Nat.lt_or_ge k (pos e.val) with h1 | h1
+          · exact h1
+          · rw [List.getElem?_eq_none (by simpa using Nat.le_trans (Nat.min_le_left _ _) h1)] at hk
+            simp at hk
+        rw [List.getElem?_take, if_pos hklt] at hk
+        exact hlast k lb' hklt hk htag' hacc'
+      · simpa using hv
 
-/-- Events already in `ls` keep their prior-access set when a transition label is
-appended. -/
-theorem priorAccesses_append_of_lt {ls : List TLabel} {ℓ : Label} {t : TxId}
-    {e : Event} {x : Loc} (hlt : e.id < ls.length) :
-    (transactionOf (ls ++ [.ev ℓ]) t).priorAccesses e x
-      = (transactionOf ls t).priorAccesses e x := by
-  rw [priorAccesses_eq, priorAccesses_eq, traceEvents_append_ev, List.filter_append]
-  have hne : ¬ (ls.length < e.id) := Nat.not_lt.mpr (Nat.le_of_lt hlt)
-  simp [hne]
 
-/-- An administrative step changes no prior-access set at all — it is not an
-event, so it never enters `po⁻¹(e) ∩ HEvent_x`. -/
-theorem priorAccesses_append_adm (ls : List TLabel) (t : TxId) (e : Event) (x : Loc) :
-    (transactionOf (ls ++ [.adm]) t).priorAccesses e x
-      = (transactionOf ls t).priorAccesses e x := by
-  rw [priorAccesses_eq, priorAccesses_eq, traceEvents_append_adm]
 
-/-- The prior accesses of a *newly appended* `get` are exactly that
-transaction's accesses to `x` in the trace so far. -/
-theorem priorAccesses_new (ls : List TLabel) (ℓ : Label) (t : TxId) (x : Loc) :
-    (transactionOf (ls ++ [.ev ℓ]) t).priorAccesses ⟨ls.length, ℓ⟩ x
-      = accessesOf t x ls := by
-  rw [priorAccesses_eq, traceEvents_append_ev, List.filter_append]
-  have hnil : List.filter
-      (fun a : Event => decide (a.id < (⟨ls.length, ℓ⟩ : Event).id)
-        && a.label.accesses x && (a.label.tx == t)) [⟨ls.length, ℓ⟩] = [] := by simp
-  rw [hnil, List.append_nil, accessesOf]
-  apply List.filter_congr
-  intro a ha
-  have h1 : a.id < ls.length := id_lt_of_mem_traceEvents ha
-  cases hb : a.label.accesses x <;> cases hc : (a.label.tx == t) <;> simp [h1]
 
-/-- **Internal consistency.** Every transaction of every trace of every program
-satisfies `Int`: a `get` of `x` returns the value of the `po`-latest earlier
-access to `x` by the *same* transaction. -/
-theorem int_transactionOf {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
-    (h : Trace (initConfig E₀) ℓs C) (t : TxId) : (transactionOf ℓs t).Int := by
-  refine Trace.reverseRecOn (motive := fun ℓs _ => ∀ t, (transactionOf ℓs t).Int)
-    (by intro t e he; simp [traceEvents, traceEventsFrom] at he)
-    ?_ h t
-  intro ls C ℓ C' hrun ih hstep u e he x n s hlabel a ha
-  cases ℓ with
-  | adm =>
-    -- an administrative step is not an event: nothing joins `E`, and no
-    -- prior-access set moves, so the IH applies unchanged
-    have hpa : (transactionOf ls u).maxPriorAccess e x = some a := by
-      rw [Transaction.maxPriorAccess, ← priorAccesses_append_adm ls u e x]
-      exact ha
-    refine ih u e ?_ x n s hlabel a hpa
-    simpa [traceEvents_append_adm] using he
-  | ev ℓ' =>
-    have hmem : e ∈ traceEvents (ls ++ [TLabel.ev ℓ']) ∧ e.label.tx = u := by
-      simpa using he
-    rw [traceEvents_append_ev] at hmem
-    rcases List.mem_append.mp hmem.1 with hold | hnew
-    · -- `e` was already present: its prior accesses are unchanged, so use the IH
-      have hlt : e.id < ls.length := id_lt_of_mem_traceEvents hold
-      have hpa : (transactionOf ls u).maxPriorAccess e x = some a := by
-        rw [Transaction.maxPriorAccess, ← priorAccesses_append_of_lt (ℓ := ℓ') hlt]
-        exact ha
-      exact ih u e (by simpa using ⟨hold, hmem.2⟩) x n s hlabel a hpa
-    · -- `e` is the label just appended, so the step that produced it is a `get`
-      cases hnew with
-      | tail _ hcon => cases hcon
-      | head =>
-        have hu : s = u := by
-          have := hmem.2; rw [hlabel] at this; simpa [Label.tx] using this
-        subst hu
-        have hℓ : ℓ' = Label.get x n s := hlabel
-        subst hℓ
-        cases hstep with
-        | @get i l v t2 K hthr hlam hth hst =>
-          refine ⟨Transaction.accesses_of_maxPriorAccess ha, ?_⟩
-          obtain ⟨w, hw⟩ := accessVal_isSome (Transaction.accesses_of_maxPriorAccess ha)
-          have hlav : lastAccessVal s x ls = some w := by
-            rw [lastAccessVal, ← priorAccesses_new ls (Label.get x n s) s x,
-              ← Transaction.maxPriorAccess, ha]
-            simpa using hw
-          have hcw := inv_store hrun s hth x w hlav
-          rw [hw, ← hcw, hst]
 
-/-- The history of any trace satisfies `Int`. -/
-theorem int_historyOf {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
-    (h : Trace (initConfig E₀) ℓs C) : (historyOf ℓs).Int := by
-  intro T hT
-  obtain ⟨t, _, rfl⟩ := List.mem_map.mp hT
-  exact int_transactionOf h t
+
+
+
+
+/-- The companion the theorem above needs in order not to be vacuous: some
+history reads each trace.  `txsOf` (Trace.lean) is the intended witness. -/
+theorem exists_historyOf (τ : List TLabel) : ∃ H, HistoryOf τ H := by
+  sorry
 
 end Reagent

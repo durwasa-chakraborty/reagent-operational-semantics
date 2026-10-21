@@ -20,13 +20,14 @@ proof:
 all: proof pdf
 
 # Confirms the consistency theorems rest only on Lean's standard axioms
-# (propext, Quot.sound) — no `sorry`, no `native_decide`.
+# (propext, Classical.choice, Quot.sound) — no `sorry`, no `native_decide`.
 axioms:
 	@echo 'import Reagent' > /tmp/_reagent_axioms.lean
 	@echo 'open Reagent' >> /tmp/_reagent_axioms.lean
-	@echo '#print axioms int_sound' >> /tmp/_reagent_axioms.lean
-	@echo '#print axioms ext_sound' >> /tmp/_reagent_axioms.lean
-	@echo '#print axioms lcs_commit' >> /tmp/_reagent_axioms.lean
+	@echo '#print axioms int_historyOf' >> /tmp/_reagent_axioms.lean
+	@echo '#print axioms ext_historyOf' >> /tmp/_reagent_axioms.lean
+	@echo '#print axioms int_transactionOf' >> /tmp/_reagent_axioms.lean
+	@echo '#print axioms cv_fst_spec' >> /tmp/_reagent_axioms.lean
 	@echo '#print axioms Trace.locate' >> /tmp/_reagent_axioms.lean
 	$(LAKE) env lean /tmp/_reagent_axioms.lean
 

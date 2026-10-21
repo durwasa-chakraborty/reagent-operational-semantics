@@ -1,8 +1,11 @@
 #+title: Notes
 
-* Abstract Syntax Tree
-The language has a very minimal syntax which is at section 1. abstract syntax
-* Operational Semantics
-For operational semantics we have @five rules. in figure 1 of the tex file.
-* NOTE just based on these rules I want you to design a lean project and create a scaffolding around it so that we can write interesting proofs around it.
-* Notice that the operational semantics like the $\lambda$  which is currently a $\bot$ and $TransactionId$ and can tomorrow be $ThreadId$ so the lean code but the code should be extremely simple to read. simplicity over everything.
+* I have a question which is bothering me for couple of days now. I need some way to look onto it from a different lens.
+* Say I have 'add' a function definition would here is how add is implemented. Add can be implemented in anyway nand gate, lambda calculus, whatever implementations are many
+* A declarative 'add' would say it satisfies properties.
+** $a + 0 = a$ is a property
+** $a + b = b + a$ is also a property and ofc
+** $a + S(b) = S(a + b)$ is something we saw in the class
+
+* Suppose I am clumsy and I say only Prop I and II are the declarative specifications of this $add$ function (which is wrong because then $add$ and $max$ become the same function)
+* Last week KN sir its upto us to define these properties. I am still not able to make peace with the fact that well what is guarding against from an incorrect definition. If humans can read definitions and machines can automate proofs then the axiom should be checkable somehow. Like axiom is a self evident proof. Who is guarding
