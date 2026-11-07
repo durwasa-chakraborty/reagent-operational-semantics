@@ -351,6 +351,24 @@ theorem Transaction.mem_events_of_mem_accessesOn {T : Transaction} {x : Loc}
     {a : Event} (h : a ∈ T.accessesOn x) : a ∈ T.events :=
   (List.mem_filter.mp h).1
 
+/-- A `get x n t` fired before `t` has set `x` reads the committed value of
+`x` at that point of the trace. -/
+theorem ext_get_value_at {E₀ : ThreadMap} {pre post : List TLabel} {C : Config}
+    {t : TxId} {x : Loc} {n : Nat}
+    (h : Trace (initConfig E₀) (pre ++ .ev (.get x n t) :: post) C)
+    (hnoset : lastSetValOf t x pre = none) : n = (cv x pre).1 := by
+  obtain ⟨D, D', hpre, hstep, _⟩ := Trace.locate h
+  have hstore : D.store x = n := by
+    cases hstep with | @get i l v u K _ _ _ hv => exact hv
+  have hactive : D.activeTx = some t := by
+    cases hstep with | @get i l v u K _ _ ht _ => exact ht
+  have hst : D.store x = (cv x pre).1 := by
+    have h1 := (storeEnc_of_trace x hpre).1
+    rw [inv_pending x hpre t hactive, hnoset] at h1
+    simpa using h1
+  rw [hstore] at hst
+  exact hst
+
 /-- **The operational half of `Ext`.** An external get of `x` returns the
 committed value of `x` at the moment it fires: the store holds it, because the
 reading transaction has not written `x` (so the pending component is `none`). -/
@@ -391,19 +409,8 @@ theorem ext_get_value {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
       rcases hleast with hEq | hLt
       · rw [hEq] at hlt; omega
       · omega
-  -- run to just before the get, and invert the step that produced it
-  subst hsplit
-  obtain ⟨D, D', hpre, hstep, _⟩ := Trace.locate h
-  have hstore : D.store x = n := by
-    cases hstep with | @get i l v u K _ _ _ hv => exact hv
-  have hactive : D.activeTx = some t := by
-    cases hstep with | @get i l v u K _ _ ht _ => exact ht
-  have hst : D.store x = (cv x pre).1 := by
-    have h1 := (storeEnc_of_trace x hpre).1
-    rw [inv_pending x hpre t hactive, hnoset] at h1
-    simpa using h1
-  rw [hstore] at hst
-  exact hst
+  rw [hsplit] at h
+  exact ext_get_value_at h hnoset
 
 /-! ## Structural facts: transactions occupy disjoint blocks
 
