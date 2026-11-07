@@ -747,11 +747,20 @@ theorem lastSetVal_append_not_set (ls : List TLabel) {lbl : Label} (s : TxId)
       = (transactionOf ls s).lastSetVal x := by
   simp [Transaction.lastSetVal, setsOn_eq_setsOf, setsOf_append_ev, h]
 
+/-- Any transaction with at least one event terminates inside the trace. -/
+theorem termPos_lt_length_maxPo {ls : List TLabel} {s : TxId}
+    (hmax : (transactionOf ls s).maxPo ≠ none) : termPos ls s < ls.length := by
+  cases hpo : (transactionOf ls s).maxPo with
+  | none => exact absurd hpo hmax
+  | some e =>
+    simp only [termPos, hpo, Option.map_some, Option.getD_some]
+    exact id_lt_of_mem_traceEvents (List.mem_filter.mp (Transaction.maxPo_mem hpo)).1
+
 theorem termPos_lt_length {ls : List TLabel} {s : TxId}
     (hc : (transactionOf ls s).Committed) : termPos ls s < ls.length := by
   obtain ⟨-, e, t', hmax, -⟩ := hc
-  simp only [termPos, hmax, Option.map_some, Option.getD_some]
-  exact id_lt_of_mem_traceEvents (List.mem_filter.mp (Transaction.maxPo_mem hmax)).1
+  apply termPos_lt_length_maxPo
+  simp [hmax]
 
 /-- Appending an event to a transaction that is uncommitted before *and* after
 disturbs neither the set of committed setters nor any of their event lists. -/
