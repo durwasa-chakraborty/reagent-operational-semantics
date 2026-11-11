@@ -351,6 +351,24 @@ theorem Transaction.mem_events_of_mem_accessesOn {T : Transaction} {x : Loc}
     {a : Event} (h : a ∈ T.accessesOn x) : a ∈ T.events :=
   (List.mem_filter.mp h).1
 
+/-- A `get x n t` fired before `t` has set `x` reads the committed value of
+`x` at that point of the trace. -/
+theorem ext_get_value_at {E₀ : ThreadMap} {pre post : List TLabel} {C : Config}
+    {t : TxId} {x : Loc} {n : Nat}
+    (h : Trace (initConfig E₀) (pre ++ .ev (.get x n t) :: post) C)
+    (hnoset : lastSetValOf t x pre = none) : n = (cv x pre).1 := by
+  obtain ⟨D, D', hpre, hstep, _⟩ := Trace.locate h
+  have hstore : D.store x = n := by
+    cases hstep with | @get i l v u K _ _ _ hv => exact hv
+  have hactive : D.activeTx = some t := by
+    cases hstep with | @get i l v u K _ _ ht _ => exact ht
+  have hst : D.store x = (cv x pre).1 := by
+    have h1 := (storeEnc_of_trace x hpre).1
+    rw [inv_pending x hpre t hactive, hnoset] at h1
+    simpa using h1
+  rw [hstore] at hst
+  exact hst
+
 /-- **The operational half of `Ext`.** An external get of `x` returns the
 committed value of `x` at the moment it fires: the store holds it, because the
 reading transaction has not written `x` (so the pending component is `none`). -/
@@ -391,19 +409,8 @@ theorem ext_get_value {E₀ : ThreadMap} {ℓs : List TLabel} {C : Config}
       rcases hleast with hEq | hLt
       · rw [hEq] at hlt; omega
       · omega
-  -- run to just before the get, and invert the step that produced it
-  subst hsplit
-  obtain ⟨D, D', hpre, hstep, _⟩ := Trace.locate h
-  have hstore : D.store x = n := by
-    cases hstep with | @get i l v u K _ _ _ hv => exact hv
-  have hactive : D.activeTx = some t := by
-    cases hstep with | @get i l v u K _ _ ht _ => exact ht
-  have hst : D.store x = (cv x pre).1 := by
-    have h1 := (storeEnc_of_trace x hpre).1
-    rw [inv_pending x hpre t hactive, hnoset] at h1
-    simpa using h1
-  rw [hstore] at hst
-  exact hst
+  rw [hsplit] at h
+  exact ext_get_value_at h hnoset
 
 /-! ## Structural facts: transactions occupy disjoint blocks
 
@@ -740,11 +747,20 @@ theorem lastSetVal_append_not_set (ls : List TLabel) {lbl : Label} (s : TxId)
       = (transactionOf ls s).lastSetVal x := by
   simp [Transaction.lastSetVal, setsOn_eq_setsOf, setsOf_append_ev, h]
 
+/-- Any transaction with at least one event terminates inside the trace. -/
+theorem termPos_lt_length_maxPo {ls : List TLabel} {s : TxId}
+    (hmax : (transactionOf ls s).maxPo ≠ none) : termPos ls s < ls.length := by
+  cases hpo : (transactionOf ls s).maxPo with
+  | none => exact absurd hpo hmax
+  | some e =>
+    simp only [termPos, hpo, Option.map_some, Option.getD_some]
+    exact id_lt_of_mem_traceEvents (List.mem_filter.mp (Transaction.maxPo_mem hpo)).1
+
 theorem termPos_lt_length {ls : List TLabel} {s : TxId}
     (hc : (transactionOf ls s).Committed) : termPos ls s < ls.length := by
   obtain ⟨-, e, t', hmax, -⟩ := hc
-  simp only [termPos, hmax, Option.map_some, Option.getD_some]
-  exact id_lt_of_mem_traceEvents (List.mem_filter.mp (Transaction.maxPo_mem hmax)).1
+  apply termPos_lt_length_maxPo
+  simp [hmax]
 
 /-- Appending an event to a transaction that is uncommitted before *and* after
 disturbs neither the set of committed setters nor any of their event lists. -/
