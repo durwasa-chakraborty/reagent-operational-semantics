@@ -1,0 +1,342 @@
+\documentclass[manuscript,nonacm]{acmart}
+
+%% acmart already provides amsmath, amssymb, amsthm, booktabs, xcolor, hyperref, graphicx.
+\usepackage{mathtools}
+\usepackage{stmaryrd}      % \llbracket, \rrbracket
+\usepackage{mathpartir}    % \inferrule for SOS rules
+\usepackage{listings}
+%% acmart predefines 'definition'; it does not define 'remark', so we add it.
+\theoremstyle{acmdefinition}
+\newtheorem{remark}{Remark}
+\newtheorem{gap}{Design decision}
+
+%% ---- notation (shared with reagent-correctness.tex) ----
+\newcommand{\Loc}{\mathit{Loc}}
+\newcommand{\Var}{\mathit{Var}}
+\newcommand{\Val}{\mathit{Val}}
+\newcommand{\ThId}{\mathit{ThId}}
+\newcommand{\TrId}{\mathit{TxId}}
+\newcommand{\Expr}{\mathit{Expr}}
+\newcommand{\reduces}{\longrightarrow}
+\newcommand{\unit}{()}
+\newcommand{\bbegin}{\textsf{begin}}
+\newcommand{\eend}{\textsf{end}}
+\newcommand{\retry}{\textsf{retry}}
+\newcommand{\getc}[1]{\textsf{get}\;(#1)}
+\newcommand{\setc}[2]{\textsf{set}\,(#1,#2)}
+\newcommand{\subst}[3]{#1[#2\mapsto #3]}
+\newcommand{\ectx}{\mathsf{ECtx}}
+\newcommand{\ehole}[1]{\ectx[[\, #1 \,]]}
+\newcommand{\getev}[3]{\textsf{get}(#1,#2)\,@\,#3}
+\newcommand{\setev}[3]{\textsf{set}(#1,#2)\,@\,#3}
+\newcommand{\eid}{\iota}
+\newcommand{\ev}[2]{\langle #1,\, #2 \rangle}
+\newcommand{\isfresh}{\ \text{fresh}}
+\newcommand{\EventId}{\mathit{EventId}}
+\newcommand{\HEvent}{\mathit{HEvent}}
+\newcommand{\rdev}[2]{\mathsf{read}(#1,#2)}
+\newcommand{\anyop}[2]{\mathord{\_}(#1,#2)}
+\newcommand{\po}{\mathit{po}}
+\newcommand{\maxpo}{\mathrm{max}_{\po}}
+
+%% ---- notation new to the optimistic semantics ----
+\newcommand{\Log}{\mathit{Log}}
+\newcommand{\Lg}{\Lambda}                         % a transaction log
+\newcommand{\emptylog}{\varepsilon}
+\newcommand{\logupd}[4]{#1[#2 \mapsto (#3,#4)]}    % set the entry of l to (expected, current)
+\newcommand{\dom}[1]{\mathrm{dom}(#1)}
+\newcommand{\kcas}[1]{\mathsf{kcas}(#1)}
+\newcommand{\kok}[3]{#1 \vdash \kcas{#2} \Downarrow #3}
+\newcommand{\kfail}[2]{#1 \vdash \kcas{#2} \Downarrow \mathsf{fail}}
+\newcommand{\valid}[2]{#1 \models #2}
+\newcommand{\txs}{\Theta}
+\newcommand{\cfg}[3]{\langle #1,\, #2,\, #3 \rangle}
+
+\lstdefinelanguage{reagent}{
+  keywords={let,in,get,set,begin,end,retry,if,then,else},
+  sensitive=true,
+  morecomment=[n]{(*}{*)},
+}
+\lstset{language=reagent, basicstyle=\ttfamily\small, columns=fullflexible,
+  frame=single, framesep=4pt, xleftmargin=4pt, showstringspaces=false}
+\newcommand{\code}[1]{\texttt{#1}}
+
+\begin{document}
+\pagestyle{plain}
+
+%% =====================================================================
+\section{Transaction logs}
+\label{sec:log}
+
+\begin{definition}[Log]
+A \emph{log} is a finite partial map from locations to pairs of values,
+\[
+\Lg : \Loc \rightharpoonup \mathbb{N} \times \mathbb{N},
+\qquad
+\Lg(l) = (o, c) \quad\text{read as: expected } o,\ \text{current } c .
+\]
+$\emptylog$ is the empty log, $\dom{\Lg}$ the locations it has an entry for,
+$\Lg(l) = \bot$ means $l \notin \dom{\Lg}$, and $\logupd{\Lg}{l}{o}{c}$ sets
+(or overwrites) the entry of $l$.
+\end{definition}
+
+
+\begin{definition}[k-CAS input of a log]
+A log is read directly as the set of k-CAS triples
+\[
+\Lg \;\equiv\; \bigl\{\, (l,\ o,\ c) \;\bigm|\; \Lg(l) = (o,c) \,\bigr\},
+\]
+each one (location, expected, desired). Since $\Lg$ is a map, each location
+occurs in exactly one triple.
+\end{definition}
+
+A location the transaction only read has $o = c$: its triple is a pure compare
+(a CMP in k-CAS terms). A location it wrote has $c$ equal to its last written
+value.
+
+%% =====================================================================
+\section{Abstract k-CAS}
+\label{sec:kcas}
+
+The k-CAS is a big-step judgement on the store, taking a log $\Lg$ as its set
+of (location, expected, current) triples. It succeeds when every expected value
+matches, and then writes every current value at once; otherwise it fails and
+changes nothing.
+\begin{mathpar}
+\inferrule*[left=\textsc{KCas-Ok}]{
+  \forall (l,o,c) \in \Lg.\ \sigma(l) = o
+}{
+  \kok{\sigma}{\Lg}{\sigma[\,l \mapsto c\,]_{(l,o,c) \in \Lg}}
+}
+\and
+\inferrule*[left=\textsc{KCas-Fail}]{
+  \exists (l,o,c) \in \Lg.\ \sigma(l) \neq o
+}{
+  \kfail{\sigma}{\Lg}
+}
+\end{mathpar}
+The update in \textsc{KCas-Ok} is well defined because each location occurs in
+at most one triple of $\Lg$. Exactly one rule applies to any $\sigma$ and
+$\Lg$, so a k-CAS is total and deterministic. We write $\valid{\sigma}{\Lg}$
+(``$\Lg$ is valid in $\sigma$'') when \textsc{KCas-Ok} applies to $\Lg$.
+
+%% =====================================================================
+\section{Configurations and rules}
+\label{sec:rules}
+
+A configuration is a triple $C = \cfg{\sigma}{E}{\txs}$:
+\begin{itemize}
+\item $\sigma : \Loc \to \mathbb{N}$ is the shared store. Only a successful
+k-CAS changes it.
+\item $E : \ThId \to \Expr$ maps each thread to its expression, as before.
+\item $\txs : \ThId \to (\TrId \times \Log \times \Expr) \cup \{\bot\}$ gives each
+thread its live transaction, if any. $\txs(i) = (t, \Lg, \hat E)$ means thread
+$i$ is running transaction $t$ with log $\Lg$, and $\hat E$ is the whole
+expression of thread $i$ at the moment it began, which a retry restores.
+$\txs(i) = \bot$ means thread $i$ is outside any transaction.
+\end{itemize}
+The lock-based $\lambda$, $\theta$, $\hat\sigma$ and $\hat E$ are all replaced by
+$\txs$. There is no global component saying who may step: every thread with a
+live transaction may.
+
+The premise $\txs(i) = (t,\Lg,\hat E)$ replaces $\lambda = i$: a thread can
+read, write, commit or retry only inside a transaction it opened itself, so
+well-formedness stays structural exactly as in the lock-based document. Unlike
+$\lambda = i$, it says nothing about other threads.
+
+\begin{figure}[ht]
+\small
+\begin{mathpar}
+\inferrule*[left=\textsc{Begin}]{
+  E(i) = \ehole{\bbegin\,;\,e} \\ \txs(i) = \bot \\ t\isfresh \\ \eid\isfresh
+}{
+  \cfg{\sigma}{E}{\txs}
+  \xrightarrow{\ev{\eid}{\bbegin\,@\,t}}
+  \cfg{\sigma}{E[i \mapsto \ehole{\unit\,;\,e}]}{\txs[i \mapsto (t,\, \emptylog,\, E(i))]}
+}
+\\
+\inferrule*[left=\textsc{Get-Log}]{
+  E(i) = \ehole{\getc{l}} \\ \txs(i) = (t,\Lg,\hat E) \\ \Lg(l) = (o,v) \\ \eid\isfresh
+}{
+  \cfg{\sigma}{E}{\txs}
+  \xrightarrow{\ev{\eid}{\getev{l}{v}{t}}}
+  \cfg{\sigma}{E[i \mapsto \ehole{v}]}{\txs}
+}
+\and
+\inferrule*[left=\textsc{Get-Mem}]{
+  E(i) = \ehole{\getc{l}} \\ \txs(i) = (t,\Lg,\hat E) \\ \Lg(l) = \bot \\
+  \sigma(l) = v \\ \eid\isfresh
+}{
+  \cfg{\sigma}{E}{\txs}
+  \xrightarrow{\ev{\eid}{\getev{l}{v}{t}}}
+  \cfg{\sigma}{E[i \mapsto \ehole{v}]}{\txs[i \mapsto (t,\, \logupd{\Lg}{l}{v}{v},\, \hat E)]}
+}
+\\
+\inferrule*[left=\textsc{Set-Log}]{
+  E(i) = \ehole{\setc{l}{v}} \\ \txs(i) = (t,\Lg,\hat E) \\ \Lg(l) = (o,c) \\ \eid\isfresh
+}{
+  \cfg{\sigma}{E}{\txs}
+  \xrightarrow{\ev{\eid}{\setev{l}{v}{t}}}
+  \cfg{\sigma}{E[i \mapsto \ehole{\unit}]}{\txs[i \mapsto (t,\, \logupd{\Lg}{l}{o}{v},\, \hat E)]}
+}
+\and
+\inferrule*[left=\textsc{Set-Mem}]{
+  E(i) = \ehole{\setc{l}{v}} \\ \txs(i) = (t,\Lg,\hat E) \\ \Lg(l) = \bot \\
+  \sigma(l) = u \\ \eid\isfresh
+}{
+  \cfg{\sigma}{E}{\txs}
+  \xrightarrow{\ev{\eid}{\setev{l}{v}{t}}}
+  \cfg{\sigma}{E[i \mapsto \ehole{\unit}]}{\txs[i \mapsto (t,\, \logupd{\Lg}{l}{u}{v},\, \hat E)]}
+}
+\\
+\inferrule*[left=\textsc{Commit}]{
+  E(i) = \ehole{\eend} \\ \txs(i) = (t,\Lg,\hat E) \\ \kok{\sigma}{\Lg}{\sigma'} \\ \eid\isfresh
+}{
+  \cfg{\sigma}{E}{\txs}
+  \xrightarrow{\ev{\eid}{\eend\,@\,t}}
+  \cfg{\sigma'}{E[i \mapsto \ehole{\unit}]}{\txs[i \mapsto \bot]}
+}
+\and
+\inferrule*[left=\textsc{KCas-Retry}]{
+  E(i) = \ehole{\eend} \\ \txs(i) = (t,\Lg,\hat E) \\ \kfail{\sigma}{\Lg} \\ \eid\isfresh
+}{
+  \cfg{\sigma}{E}{\txs}
+  \xrightarrow{\ev{\eid}{\retry\,@\,t}}
+  \cfg{\sigma}{E[i \mapsto \hat E]}{\txs[i \mapsto \bot]}
+}
+\\
+\inferrule*[left=\textsc{Retry}]{
+  E(i) = \ehole{\retry} \\ \txs(i) = (t,\Lg,\hat E) \\ \eid\isfresh
+}{
+  \cfg{\sigma}{E}{\txs}
+  \xrightarrow{\ev{\eid}{\retry\,@\,t}}
+  \cfg{\sigma}{E[i \mapsto \hat E]}{\txs[i \mapsto \bot]}
+}
+\end{mathpar}
+\caption{The k-CAS semantics of Reagent commands. Every rule fires on the redex
+of thread $i$ in context $\ectx$ and mints a fresh event identifier $\eid$. Only
+\textsc{Commit} changes the store.}
+\label{fig:rules}
+\end{figure}
+
+%% =====================================================================
+\section{Histories}
+\label{sec:history}
+
+Runs emit the same actions as in the lock-based document:
+\[
+a \;::=\; \bbegin\,@\,t \;\mid\; \eend\,@\,t \;\mid\; \retry\,@\,t
+      \;\mid\; \getev{l}{v}{t} \;\mid\; \setev{l}{v}{t}.
+\]
+Events, histories $H = (E,\po)$ and transactions $T_t = (E_t,\po_t)$ are as in
+the lock-based document. $T_t$ is \emph{committed} if $E_t$ contains
+$\eend\,@\,t$, \emph{retried} if it contains $\retry\,@\,t$,
+and \emph{pending} otherwise. Only \textsc{Commit} emits $\eend$, so ``committed''
+means ``its k-CAS succeeded''.
+
+The main structural difference is that transactions now \emph{overlap} in
+$\po$: the events of different live transactions interleave.
+
+\begin{definition}[Arbitration]
+For committed $T_s \neq T_t$,
+\[
+T_s <_{\mathrm{AR}} T_t \quad\text{iff}\quad
+\eend\,@\,s \ \text{precedes}\ \eend\,@\,t \ \text{in}\ \po .
+\]
+\end{definition}
+In the lock-based document $T_s <_{\mathrm{AR}} T_t$ meant ``$s$ ends before
+$t$ begins''. With overlapping transactions that is no longer total, so
+arbitration becomes the order of the \textsc{Commit} steps, the k-CAS
+linearisation order. It is total on committed transactions because each commit
+is one transition. It contains real-time order: if $s$ ends before $t$ begins,
+$s$'s commit precedes $t$'s.
+
+%% =====================================================================
+\section{Internal consistency}
+\label{sec:int}
+
+$\textsc{Int}$ is Cerone's axiom, unchanged from the lock-based document, and
+it still holds of every transaction, committed or not:
+\[
+\forall T \in H.\ \forall e = \getev{x}{v}{t} \in T.\quad
+\po^{-1}(e) \cap \HEvent_x \neq \emptyset \implies
+\text{the value of } \maxpo\bigl(\po^{-1}(e) \cap \HEvent_x\bigr) \text{ is } v ,
+\tag{$\textsc{Int}$}
+\]
+where $\HEvent_x$ is the set of $\textsf{get}$ and $\textsf{set}$ events on $x$.
+
+\begin{lemma}[log mirrors program order]
+\label{lem:log}
+Let thread $i$ run transaction $t$ with log $\Lg$. For every $l$,
+$\Lg(l) = \bot$ iff $t$ has emitted no $\textsf{get}$ or $\textsf{set}$
+on $l$ so far, and otherwise $\Lg(l) = (o,c)$ where $c$ is the value of $t$'s
+$\po$-latest such event and $o$ is the value of $l$ in the store at $t$'s
+first such event.
+\end{lemma}
+\begin{proof}[Proof idea]
+Induction on the run. \textsc{Get-Mem} and \textsc{Set-Mem} create the entry
+of $l$ at $t$'s first access, with $o$ the store value and $c$ the event's
+value. \textsc{Set-Log} sets $c$ to the event's value and keeps $o$.
+\textsc{Get-Log} emits $c$ and changes nothing, which is consistent since $c$
+already is the latest value. Other threads never touch $\Lg$.
+\end{proof}
+
+\begin{theorem}[$\textsc{Int}$]
+Every history of every run satisfies $\textsc{Int}$.
+\end{theorem}
+\begin{proof}[Proof idea]
+A read $e = \getev{l}{v}{t}$ with an earlier access to $l$ in $t$ fires
+\textsc{Get-Log} (Lemma~\ref{lem:log}, ``iff'' direction), and returns
+the current value of $\Lg(l)$, the value of the $\po$-latest earlier access.
+\end{proof}
+
+A corollary that the external-consistency proof uses: a read is \emph{external}
+(no earlier access to $l$ in its transaction) iff it was fired by
+\textsc{Get-Mem}.
+
+%% =====================================================================
+\section{External consistency}
+\label{sec:ext}
+
+The writers are, as before, the committed transactions with
+$S \vdash \mathsf{Write}\ x : \_$; now the readers are as well:
+\[
+\begin{aligned}
+&\forall T \in H.\ T \text{ committed} \implies \forall x, n.\quad T \vdash \mathsf{Read}\ x : n \implies {}\\
+&\quad \bigl(\mathrm{AR}^{-1}(T) \cap \{\, S \mid S \vdash \mathsf{Write}\ x : \_ \,\} = \emptyset \,\wedge\, n = \sigma_0(x)\bigr)\\
+&\quad {}\vee\ \mathrm{max}_{\mathrm{AR}}\bigl(\mathrm{AR}^{-1}(T) \cap \{\, S \mid S \vdash \mathsf{Write}\ x : \_ \,\}\bigr) \vdash \mathsf{Write}\ x : n .
+\end{aligned}
+\tag{$\textsc{Ext}_c$}
+\]
+
+\begin{lemma}[the store is the commit order]
+\label{lem:store}
+At any point of a run, $\sigma(x)$ is the value $n$ with
+$S \vdash \mathsf{Write}\ x : n$ for the latest committed $S$ (in $\po$ of
+commit events so far) that writes $x$, or $\sigma_0(x)$ if there is none.
+\end{lemma}
+\begin{proof}[Proof idea]
+Only \textsc{Commit} changes $\sigma$. For each $x \in \dom{\Lg}$ with
+$\Lg(x) = (o,c)$ it writes $c$, which by Lemma~\ref{lem:log} is the last value
+$S$ set if $S$ wrote $x$, and the unchanged current value if $S$ only read it.
+\end{proof}
+
+\begin{theorem}[$\textsc{Ext}_c$]
+Every history of every run satisfies $\textsc{Ext}_c$.
+\end{theorem}
+\begin{proof}[Proof idea]
+Let $T$ commit at store $\sigma_c$, and let $T \vdash \mathsf{Read}\ x : n$.
+That read is external, so it fired \textsc{Get-Mem}, which created the entry
+$(n,n)$; the expected value is never changed afterwards, so at commit
+$\Lg(x) = (n,c)$ for some $c$. \textsc{KCas-Ok} at the commit gives
+$\sigma_c(x) = n$. By Lemma~\ref{lem:store} at the commit point, $\sigma_c(x)$
+is the value of the AR-latest committed writer of $x$ before $T$, or
+$\sigma_0(x)$.
+\end{proof}
+
+The key step is that the commit validates \emph{every} first observation, not
+only the ones $T$ goes on to write, so $T$'s whole external view is the store at
+its commit point. That is what makes the history serialisable in commit order,
+and why read-only locations still appear in $\Lg$, as compares.
+
+\end{document}

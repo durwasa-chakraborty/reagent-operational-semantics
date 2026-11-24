@@ -1,0 +1,558 @@
+#+TITLE: Optimistic track — proof requests
+#+TODO: OPEN | PROVED GAP
+
+* Purpose
+
+This file is a queue of pen-and-paper proofs. Each entry under
+[[*Requests][Requests]]
+is written by me. Claude mechanizes *only* that entry, following my proof,
+and nothing else.
+
+* Rules for Claude
+
+1. Scope. Prove exactly the statement of the entry, by the route the
+   pen-and-paper proof takes. Do not prove neighbouring lemmas, generalise the
+   statement, or start the next entry.
+2. Follow the proof. Each step of the paper proof should be visible in the
+   Lean proof. If Lean needs a different route, say so and why before using
+   it.
+3. Insufficient proofs are reported, not repaired. If a step does not go
+   through, stop and report:
+   - which step fails;
+   - the missing fact, stated precisely;
+   - a counterexample (a concrete trace) if the step is false, or the extra
+     hypothesis that would make it true.
+   Do not silently add hypotheses, lemmas or cases to close the gap.
+
+* Requests
+
+** Proof Statement
+***
+
+$$\forall C'\, \forall \tau\, \forall H.\ \mathit{Run}\ C_0\ \tau\ C' \wedge \mathit{HistoryOf}\ \tau\ H \rightarrow H \models \mathit{Int} \wedge H \models \mathit{Ext}$$
+We proved this for the pessimistic track, but we could change the $\forall$ to
+an $\exists$ and hope all our problems disappear.
+With $\forall$ we go through every $H$: one of them is the true history and
+the rest hold vacuously, which does not matter because $H$ is universally
+quantified.
+With $\exists$ we can choose an $H$ that makes the antecedent $\bot$ and then
+prove wrong things about it.
+Certain things will hold vacuously, so we move from $\forall \tau\, \exists H$
+to
+
+$$\forall C'\, \forall \tau.\ \mathit{Run}\ C_0\ \tau\ C' \rightarrow \exists H.\ \mathit{HistoryOf}\ \tau\ H \wedge H \models \mathit{Int} \wedge H \models \mathit{Ext}$$
+
+** Proving HistoryOf
+
+$$\forall C'\, \forall \tau.\ \mathit{Run}\ C_0\ \tau\ C' \rightarrow \exists H.\ \mathit{HistoryOf}\ \tau\ H$$
+
+*** Witness
+
+We are handed $C'$ and $\tau$ with $\mathit{Run}\ C_0\ \tau\ C'$, and we have
+to come up with a history. H1 already fixes the transactions to those of
+$\tau$, so the only thing we actually get to choose is $\mathit{AR}$. We order
+transactions by when they finish:
+$$H := (\mathit{txs}(\tau),\ \mathit{AR})$$
+\begin{align*}
+\mathit{AR}(S,T) :=\ & (\mathit{fin}\,S \wedge \mathit{fin}\,T \wedge \mathit{term}_S \prec \mathit{term}_T) \\
+\vee\ & (\mathit{fin}\,S \wedge \mathit{pend}\,T) \\
+\vee\ & (\mathit{pend}\,S \wedge \mathit{pend}\,T \wedge \mathit{begin}_S \prec \mathit{begin}_T)
+\end{align*}
+
+
+2/3 seems to be obvious except that the last one.
+The order among pending transactions is arbitrary. H2 wants a total order, so
+they have to go in some order, and $\mathsf{begin}$ order is simply an easy
+one. It says nothing about how they will end: if the run goes on and $T$
+commits before $S$, that longer trace gets its own history with $T$ before
+$S$. This inturn requires some discussion but prima facie looks okay.
+
+Note that $H$ is built out of $\tau$ and nothing else, much like
+$m := n + 1$ is the witness for $\forall n.\ \exists m.\ m > n$.
+
+
+*** H1: $\forall T.\ H.\mathit{txs}\ T \leftrightarrow \mathit{txs}(\tau)\ T$
+
+By construction: $H.\mathit{txs} := \mathit{txs}(\tau)$, so H1 is
+$A \leftrightarrow A$.
+
+*** H2: $S \neq T \rightarrow \mathit{AR}(S,T) \vee \mathit{AR}(T,S)$
+
+Case on the status of $S$ and $T$.
+(More details on the physical notebook)
+
+*** H3: $\mathit{AR}(S,T) \rightarrow \neg \mathit{AR}(T,S)$
+Still follows the same case analysis, shouldn't be difficult
+- $\mathit{AR}(T,S)$ would put a pending transaction before a finished
+  one.
+
+*** H4: $\mathit{AR}(S,T) \wedge \mathit{AR}(T,U) \rightarrow \mathit{AR}(S,U)$
+Case analysis, ditto
+- pend, pend, pend: transitivity on $\mathsf{begin}$, using some unquiness.
+
+*** H5: $S \neq T \wedge \mathit{RT}(S,T) \rightarrow \mathit{AR}(S,T)$
+
+$\mathit{RT}(S,T)$ says $S$ ended before $T$ began, so $S$ is finished.
+- $T$ pending: the middle clause.
+- $T$ finished: needs $\mathit{begin}_T \prec \mathit{term}_T$; the LLM
+  should be able to fill this in by induction on the run.
+
+** Proving Internal Consistency
+
+Cerone's internal-consistency axiom:
+
+\begin{align*}
+\forall (E, \mathit{po}) \in H.\ \forall e \in E.\ \forall x, n.\quad
+  & \bigl(e = (\_, \mathsf{get}(x,n)) \wedge \mathit{po}^{-1}(e) \cap \mathit{HEvent}_x \neq \emptyset\bigr) \\
+  & \rightarrow \max\nolimits_{\mathit{po}}\bigl(\mathit{po}^{-1}(e) \cap \mathit{HEvent}_x\bigr) = (\_, \mathsf{op}(x,n))
+\end{align*}
+
+where $\mathit{HEvent}_x$ is the set of $\mathsf{get}$ and $\mathsf{set}$ events
+on $x$, and $\mathsf{op}(x,n)$ is a $\mathsf{get}$ or a $\mathsf{set}$ of $n$ on
+$x$.
+
+We had introduced $P_x(e)$ as a shorthand for
+$\mathit{po}^{-1}(e) \cap \mathit{HEvent}_x$, so we reuse it here:
+
+\begin{align*}
+\forall (E, \mathit{po}) \in H.\ \forall e \in E.\ \forall x, n.\quad
+  & \bigl(e = (\_, \mathsf{get}(x,n)) \wedge P_x(e) \neq \emptyset\bigr) \\
+  & \rightarrow \max\nolimits_{\mathit{po}} P_x(e) = (\_, \mathsf{op}(x,n))
+\end{align*}
+
+*** The idea
+
+Alright, now we have a log $\Lambda$ for every live transaction, same as in the
+rules. A read $\mathsf{get}(x)$ inside $t$ fires one of two rules, and which
+one depends only on $\Lambda(x)$:
+
+\begin{align*}
+\Lambda(x) = (o, c) &\;\Rightarrow\; \textsc{Get-Log},\ \text{returns } c \\
+\Lambda(x) = \bot &\;\Rightarrow\; \textsc{Get-Mem},\ \text{returns } \sigma(x)
+\end{align*}
+
+
+*** (L) the log mirrors po
+
+For every $C$ with $\mathit{Run}\ C_0\ \tau\ C$, and every thread with
+$\Theta(i) = (t, \Lambda, \hat E)$:
+
+$$\Lambda(x) = \bot \;\leftrightarrow\; \tau \text{ has no access to } x \text{ tagged } t$$
+$$\Lambda(x) = (o, c) \;\rightarrow\; \text{the latest access to } x \text{ tagged } t \text{ has value } c$$
+
+Only live transactions; once $t$ commits or retries its log is gone
+and (L) says nothing about it.
+
+Induction on the run, $C_0 \xrightarrow{\tau} C \xrightarrow{a} C'$. Base:
+$\Theta = \bot$ everywhere. Step, one case per rule:
+- Begin: $\Lambda := \emptyset$, and $t$ is brand new so nothing is tagged $t$
+  yet (needs: a fresh $t$ has no old events).
+- Get-Mem, Set-Mem: $\Lambda(x) = \bot$ becomes $(\_, v)$; $a$ is the first
+  access to $x$, value $v$.
+- Set-Log: $(o, c)$ becomes $(o, v)$; $a$ is now the latest, value $v$.
+- Get-Log: nothing changes; $a$ returns $c$ and is now the latest, value $c$.
+- Commit, KCas-Retry, Retry: $\Theta(i) := \bot$, nothing to check.
+- Other locations $y \neq x$: neither $\Lambda(y)$ nor the accesses to $y$
+  change.
+- Other threads: $a$ comes from $j$ running $s$; $t$'s log is untouched, and
+  $a$ is not one of $t$'s accesses as long as $s \neq t$. So we need (D): two
+  live threads never run the same $t$. Follows from $t$ fresh.
+
+*** From (L) to Int
+
+Induction again, $\mathit{Int}(\tau) \rightarrow \mathit{Int}(\tau \cdot a)$.
+- $a$ is not a $\mathsf{get}$: nothing new to check.
+- Old reads $e$: $P_x(e)$ only looks backwards and $a$ is later, so nothing
+  changes for them.
+- $a = \mathsf{get}(x, n)@t$ with $P_x(a) \neq \emptyset$:
+
+\begin{align*}
+P_x(a) \neq \emptyset
+  &\;\Rightarrow\; t \text{ touched } x \\
+  &\;\overset{(L)}{\Rightarrow}\; \Lambda(x) = (o, c) \\
+  &\;\Rightarrow\; \text{not Get-Mem, so Get-Log and } n = c \\
+  &\;\overset{(L)}{\Rightarrow}\; n = \text{value of } \max\nolimits_{\mathit{po}} P_x(a)
+\end{align*}
+
+What it rests on: (L) by induction, (D) live threads never share a $t$, and
+(F) a fresh $t$ has no old events (tags below $\mathit{nextTx}$, already in
+=inv_bbt=).
+
+** Proving External Consistency
+
+*** (a) Committed transactions
+
+**** Statement
+
+Fix a run $\mathit{Run}\ C_0\ \tau\ C'$ and the history
+$H = (\mathit{txs}(\tau), \mathit{AR})$ from [[*Witness][Witness]]. For a
+transaction $T$ and a location $x$ write
+
+\begin{align*}
+T \vdash \mathsf{Read}(x, n) \;&:\Leftrightarrow\; \exists e \in T.\ e = (\_, \mathsf{get}(x, n)) \wedge \mathit{po}^{-1}(e) \cap \mathit{HEvent}_x = \emptyset \\
+T \vdash \mathsf{Write}(x, n) \;&:\Leftrightarrow\; \max\nolimits_{\mathit{po}}\{\, a \in T \mid a = (\_, \mathsf{set}(x, \_)) \,\} = (\_, \mathsf{set}(x, n)) \\
+W_x(T) \;&:=\; \{\, S \in H \mid S \text{ committed},\ S \neq T,\ S \xrightarrow{\mathit{AR}} T,\ S \vdash \mathsf{Write}(x, \_) \,\}
+\end{align*}
+
+*Theorem* ($\textsc{Ext}_c$).
+\begin{align*}
+\forall T \in H.\ T \text{ committed} \rightarrow \forall x, n.\ T \vdash \mathsf{Read}(x, n) \rightarrow\quad
+  & \bigl(W_x(T) = \emptyset \wedge n = \sigma_0(x)\bigr) \\
+  \vee\ & \max\nolimits_{\mathit{AR}} W_x(T) \vdash \mathsf{Write}(x, n)
+\end{align*}
+
+This is Cerone's $\textsc{Ext}$ with $\mathit{VIS} = \mathit{AR}$, restricted
+to committed readers. Uncommitted readers are [[*(b) Uncommitted transactions][part (b)]].
+
+**** Lemmas
+
+Throughout, $C$ ranges over configurations with $\mathit{Run}\ C_0\ \tau\ C$,
+and $\Theta(i) = (t, \Lambda, \hat E)$ is a live thread of $C$.
+
+*Lemma 1* (External).
+$$\Lambda(x) = \bot \;\leftrightarrow\; \tau \text{ has no access to } x \text{ tagged } t$$
+
+/Proof./ Induction on the run, $C_0 \xrightarrow{\tau} C \xrightarrow{a} C'$.
+Base: $\Theta = \bot$ everywhere, nothing to show. Step: fix $i$ live in $C'$
+with $\Theta'(i) = (t, \Lambda', \hat E)$.
+
+($\rightarrow$) Assume $\Lambda'(x) = \bot$; show $\tau \cdot a$ has no access
+to $x$ tagged $t$.
+- Begin at $i$: $\Lambda' = \emptyset$ and $t = \mathit{nextTx}$. Nothing in
+  $\tau$ is tagged $t$ by (F); $a$ is not an access.
+- Get-Mem, Set-Mem, Get-Log, Set-Log at $i$ on $x$: $\Lambda'(x) \neq \bot$,
+  contradicting the assumption.
+- Any of these at $i$ on $y \neq x$: $\Lambda(x) = \Lambda'(x) = \bot$, so the
+  IH covers $\tau$, and $a$ is on $y$.
+- Commit, KCas-Retry, Retry at $i$: $i$ is not live in $C'$.
+- Any step at $j \neq i$: $\Lambda = \Lambda'$, so the IH covers $\tau$. $a$
+  is tagged $j$'s transaction $s$, and $s \neq t$ by (D), or by (F) if $a$ is
+  $\mathsf{begin}\ s$.
+- $\mathsf{adm}$: no event, $\Theta$ unchanged.
+
+($\leftarrow$) Assume $\tau \cdot a$ has no access to $x$ tagged $t$; show
+$\Lambda'(x) = \bot$.
+- Begin at $i$: $\Lambda' = \emptyset$.
+- Get-Mem, Set-Mem, Get-Log, Set-Log at $i$ on $x$: then $a$ is an access to
+  $x$ tagged $t$, contradicting the assumption.
+- Any of these at $i$ on $y \neq x$: $\tau$ has no access to $x$ tagged $t$,
+  so $\Lambda(x) = \bot$ by the IH, and $\Lambda'(x) = \Lambda(x)$.
+- Commit, KCas-Retry, Retry at $i$: $i$ is not live in $C'$.
+- Any step at $j \neq i$, and $\mathsf{adm}$: $\Lambda' = \Lambda$ and the IH
+  applies to $\tau$. $\square$
+
+*Lemma 2* (Expected value is kept). If $\Lambda(x) = (o, c)$ in $C$, and a
+later $C''$ on the same run still has $\Theta''(i) = (t, \Lambda'', \_)$, then
+$\Lambda''(x) = (o, c'')$ for some $c''$.
+
+/Proof./ Induction on the steps between $C$ and $C''$. Only steps of $i$ change
+$\Lambda$. Get-Mem and Set-Mem need $\Lambda(x) = \bot$, so they do not fire on
+$x$. Set-Log replaces $(o, c)$ by $(o, v)$. Get-Log changes nothing. $\square$
+
+*Lemma 3* (Current value). If $\Lambda(x) = (o, c)$ then
+- $t$ has a $\mathsf{set}$ on $x$ in $\tau$ $\rightarrow$ $c$ is the value of
+  $t$'s $\mathit{po}$-last $\mathsf{set}$ on $x$;
+- $t$ has no $\mathsf{set}$ on $x$ in $\tau$ $\rightarrow$ $c = o$.
+
+/Proof./ Induction on the run. The entry is created by Get-Mem as $(v, v)$, or
+by Set-Mem as $(u, v)$ with $a = \mathsf{set}(x, v)$, and these are $t$'s first
+access to $x$ (Lemma 1). Set-Log makes $c$ the value of the new last
+$\mathsf{set}$. Get-Log changes neither $c$ nor the $\mathsf{set}$s. Steps of
+other threads change neither, by (D). $\square$
+
+*Lemma 4* (Store is the commit order). In every $C$,
+$\sigma(x) = n$ where $S \vdash \mathsf{Write}(x, n)$ for the latest $S$ that
+commits in $\tau$ and has $S \vdash \mathsf{Write}(x, \_)$, or
+$\sigma(x) = \sigma_0(x)$ if there is no such $S$.
+
+/Proof./ Induction on the run. Only Commit changes $\sigma$ or the set of
+committed transactions. Let $t$ commit with $\Lambda$ and
+$\sigma' = \mathit{apply}(\sigma, \Lambda)$.
+- $\Lambda(x) = \bot$: $\sigma'(x) = \sigma(x)$, and $t$ has no access to $x$
+  (Lemma 1), so the latest committed writer of $x$ is unchanged.
+- $\Lambda(x) = (o, c)$ and $t$ set $x$: $\sigma'(x) = c$, which is $t$'s last
+  $\mathsf{set}$ value (Lemma 3), and $t$ is now the latest committed writer.
+- $\Lambda(x) = (o, c)$ and $t$ only read $x$: $c = o$ (Lemma 3) and
+  $\sigma(x) = o$ (KCasOk), so $\sigma'(x) = \sigma(x)$, and $t$ is not a
+  writer of $x$.
+
+Events after a commit are never tagged with the committed transaction, by
+(Closed), so $S \vdash \mathsf{Write}(x, \_)$ does not change for a committed
+$S$. $\square$
+
+**** Proof of $\textsc{Ext}_c$
+
+Let $T \in H$ be committed with transaction id $t$, and let
+$e = \mathsf{get}(x, n)@t$ witness $T \vdash \mathsf{Read}(x, n)$. Let $c$ be
+$t$'s commit event, and split the run at $e$ and at $c$:
+
+$$C_0 \xrightarrow{\tau_1} C_e \xrightarrow{e} C_e' \longrightarrow \cdots \longrightarrow C_c \xrightarrow{c} C_c' \xrightarrow{\tau_3} C'$$
+
+($e$ comes before $c$ by (Closed).)
+
+1. /$e$ was fired by Get-Mem./ $e$ is emitted by the thread $i$ running $t$,
+   with $\Theta_e(i) = (t, \Lambda_e, \_)$. $e$ is external, so $\tau_1$ has
+   no access to $x$ tagged $t$, and $\Lambda_e(x) = \bot$ by Lemma 1
+   ($\leftarrow$). Get-Log needs $\Lambda_e(x) \neq \bot$, so Get-Mem fired:
+   $n = \sigma_e(x)$ and $\Lambda_e'(x) = (n, n)$.
+2. /At commit, $t$ still expects $n$./ $i$ runs $t$ from $C_e'$ to $C_c$, so
+   $\Lambda_c(x) = (n, \_)$ by Lemma 2.
+3. /Memory agrees at commit./ Commit fired, so KCasOk gives
+   $\sigma_c(x) = n$.
+4. /Memory is the latest committed writer./ By Lemma 4 at $C_c$, $n$ is the
+   value with $S \vdash \mathsf{Write}(x, n)$ for the latest $S$ committed
+   before $c$ that writes $x$, or $n = \sigma_0(x)$ if there is none.
+5. /That writer is $\max_{\mathit{AR}} W_x(T)$./ For committed $S \neq T$,
+   $S \xrightarrow{\mathit{AR}} T$ iff $\mathsf{term}_S \prec \mathsf{term}_T = c$
+   (first clause of $\mathit{AR}$), that is, iff $S$ commits before $c$. So
+   $W_x(T)$ is exactly the set of writers of $x$ committed before $c$. AR on
+   committed transactions is commit order, so the latest one in step 4 is
+   $\max_{\mathit{AR}} W_x(T)$, and "none" is $W_x(T) = \emptyset$. $\square$
+
+**** What it rests on
+
+- Lemmas 1–4 above, each by induction on the run.
+- (F) a fresh $t$ has no old events; (D) two live threads never run the same
+  $t$. Both are from the Int proof.
+- (Closed) after $t$ commits or retries, no event is tagged $t$.
+- The witness $\mathit{AR}$ and $\mathit{HistoryOf}\ \tau\ H$.
+
+f
+
+**** Design pattern (for later): state P on the event list, translate once
+
+/Current Lean proof./ The P field of $\mathit{Inv}$ is stated on the witness
+history: $P(\tau) := \textsc{Ext}_c(\mathit{witness}\ \tau)$. Every step then
+rebuilds the transactions from scratch ($\mathit{transactionOf}\ (es \mathbin{+\!\!+} [n])\ t$)
+and has to show the old ones are unchanged: B5
+($\mathit{transactionOf}$ of an old tag is the same object), $W_x(T)$ and
+$\max_{\mathit{AR}} W_x(T)$ unchanged, and the transaction tagged
+$\mathit{tag}(n)$ never AR-before an old $T$. This works, and is kept for now.
+
+/Alternative./ Cur, Store and R are stated on lists and logs. State P the same
+way, on the event list, and move the history translation into the projection:
+
+$$P_{\mathit{list}}(es) :\iff \forall t\ \text{committed},\ \forall\ \text{first read}\ \mathsf{get}(x,v)@t \in es,\quad
+W = \{ s \mid \mathsf{end}_s \prec \mathsf{end}_t,\ s\ \text{sets}\ x \}$$
+$$\quad (W = \emptyset \wedge v = \sigma_0(x)) \ \vee\ (s = \text{the}\ s \in W\ \text{with the latest}\ \mathsf{end}_s \wedge \mathit{wr}(s, x, v))$$
+
+1. /Inv field/ $P_{\mathit{list}}$, one line per rule like Store: non-end
+   steps are a frame (Lemma B); Commit is R + KCasOk + Store, all list facts.
+2. /Projection/ $P_{\mathit{list}}(\mathit{events}\ \tau) \rightarrow \textsc{Ext}_c(\mathit{witness}\ \tau)$,
+   once, with no induction and no $es \mathbin{+\!\!+} [n]$: B5 and the
+   $W_x$/$\max_{\mathit{AR}}$ snoc lemmas are no longer needed.
+
+Same architecture, $\mathit{Run} \rightarrow \mathit{Inv} \rightarrow P$; the
+projection does the implementation-to-spec translation once instead of at
+every step.
+
+*** (b) Uncommitted transactions
+
+$\textsc{Ext}$ over every $T \in H$, retried and pending included, fails for
+our rules. A transaction can read a mixed snapshot before its k-CAS catches it
+(a /zombie/), and no $\mathit{AR}$ places it. With $\sigma_0 = 0$:
+
+#+begin_example
+1  begin t
+2  get x 0 @t     Get-Mem, σ(x) = 0
+3  begin s
+4  set x 1 @s
+5  set y 1 @s
+6  end s          KCasOk, σ = {x↦1, y↦1}
+7  get y 1 @t     Get-Mem, σ(y) = 1
+8  retry t        KCasFail: σ(x) = 1 ≠ 0
+#+end_example
+
+- $t \to s$: the read $y = 1$ has no committed writer of $y$ before $t$.
+- $s \to t$: the read $x = 0$ should be $1$.
+
+So the $\exists H$ statement fails too, not only the finish-order witness.
+Under the lock this never arose: no other transaction could change memory
+between $t$'s reads.
+
+Keeping $\forall T$ (opacity) means changing the rules, for example by
+validating at every read:
+
+$$\textsc{Get-Mem}' \quad \Theta(i) = (t, \Lambda, \hat E),\ \Lambda(x) = \bot,\ \sigma(x) = v,\ \mathit{KCasOk}\ \sigma\ \Lambda$$
+
+Open: as written, a $t$ whose check fails is stuck at the $\mathsf{get}$,
+because KCas-Retry only fires on an $\mathsf{end}$ redex. Where should the retry go?
+
+/Decision (2026-11-18)./ Opacity is not pursued. Read skew in an uncommitted
+transaction is allowed: the zombie above is fine. Part (b) proves $\textsc{Ext}_u$
+below, for the rules as they are.
+
+**** Notation
+
+$es = \mathit{events}(\tau)$, and a step appends one event: $es' = es \mathbin{+\!\!+} [n]$.
+
+- $\mathit{Com}(es) = \{ s \mid \mathsf{end}_s \in es \}$, the committed tags.
+- $\mathit{set}_{es}(s, x)$: $s$ has a $\mathsf{set}$ on $x$ in $es$.
+  $\mathit{wr}_{es}(s, x, v)$: the last $\mathsf{set}$ of $s$ on $x$ writes $v$.
+- $\mathit{Ext}_{es}(e)$: $e = \mathsf{get}(x, v)@t$ and no access of $t$ to $x$
+  comes before $e$ in $es$ (the first access).
+- Lemma B (part (a)), for $s \neq \mathit{tag}(n)$ and $a, b, e \in es$:
+  B1 $a \prec_{es'} b \iff a \prec_{es} b$; B2 $\mathit{Ext}_{es'}(e) \iff \mathit{Ext}_{es}(e)$;
+  B4 $\mathit{set}$ and $\mathit{wr}$ of $s$ unchanged. B5: the transaction of an
+  old tag $s \neq \mathit{tag}(n)$ is unchanged.
+
+**** Statement
+
+Visibility is per operation. For an operation $e$ of $\tau$ (witness history $H$):
+
+$$\mathit{VIS}(S, e) \;:\iff\; S \in \mathit{Com} \;\wedge\; \mathsf{end}_S \prec_\tau e$$
+$$W_e \;:=\; \mathit{VIS}^{-1}(e) \cap \{ S \mid \mathit{set}(S, x) \} \qquad (e = \mathsf{get}(x, v))$$
+
+*Theorem* ($\textsc{Ext}_u$). For every uncommitted $T \in H$ (retried or
+pending) and every external read $e = \mathsf{get}(x, v)$ of $T$:
+
+$$(W_e = \emptyset \wedge v = \sigma_0(x)) \;\vee\; (S = \max_{\mathit{AR}} W_e \wedge S \vdash \mathsf{Write}(x, v))$$
+
+Each read has its own $W_e$, so two reads of one $T$ may see different
+committed prefixes (read skew). On committed transactions $\mathit{AR}$ is
+commit order, so $\max_{\mathit{AR}} W_e$ is the writer in $W_e$ with the latest
+$\mathsf{end}$.
+
+/Strengthening./ We prove the same property for *every* $T$, committed
+included, and call it $U(\tau)$. $\textsc{Ext}_u$ is $U$ restricted to
+uncommitted $T$. The strengthening makes the Commit step free: a transaction
+becoming committed creates no new obligation. (For committed $T$ it agrees with
+part (a): by validation no writer of $x$ commits between $e$ and $\mathsf{end}_T$.)
+
+**** The invariant
+
+Part (a)'s $\mathit{Inv}$ gains two fields:
+
+$$\mathit{Inv}_b(\tau, C) \;=\; \mathit{Inv}(\tau, C) \;\wedge\; L^-(\tau, C) \;\wedge\; U(\tau)$$
+
+- $L^-$ (new; the other half of L; accepted 2026-11-18, in Lean as =logBack=). For every live $(t, \Lambda)$ in $C$:
+  $$\Lambda(x) \neq \bot \;\Rightarrow\; \exists a \in es.\ \mathit{tag}(a) = t \wedge a\ \text{accesses}\ x$$
+  With L: $\Lambda_t(x) = \bot \iff t$ has no access to $x$.
+- $U$, as above.
+
+$\mathit{Run}\ C_0\ \tau\ C \Rightarrow \mathit{Inv}_b(\tau, C)$ by induction on
+the run, one table per field; then $\textsc{Ext}_u$ is the projection
+$\mathit{Inv}_b \Rightarrow U \Rightarrow \textsc{Ext}_u$.
+
+**** Lemma $L^-$
+
+Two worlds, as for Cur: /mine/ is the stepping thread's log, /others/ every other
+live log. Other logs never change, and $es \subseteq es'$, so an access that
+witnessed $\Lambda(x) \neq \bot$ still does: others are framed on every row.
+
+| rule        | mine                                                    | others |
+|-------------+---------------------------------------------------------+--------|
+| Begin       | new log $\Lambda = \emptyset$: nothing to show          | frame  |
+| Get-Log     | $\Lambda$ unchanged                                     | frame  |
+| Get-Mem $l$ | $\Lambda'(l) = (v,v)$; $n$ accesses $l$, $n \in es'$    | frame  |
+| Set-Log $l$ | $\Lambda'(l) = (o,v)$; $\Lambda(l) \neq \bot$ before (IH) | frame  |
+| Set-Mem $l$ | $\Lambda'(l) = (u,v)$; $n$ accesses $l$, $n \in es'$    | frame  |
+| Commit      | leaves                                                  | frame  |
+| KCas-Retry, Retry | leaves                                            | frame  |
+| Adm         | no event                                                | frame  |
+
+At $x \neq l$, $\Lambda'(x) = \Lambda(x)$ and the IH applies. $\square$
+
+**** Lemma $U$
+
+/Frame (old reads)./ Let $e \in es$, $e = \mathsf{get}(x, v)@t$ external.
+Suppose $\mathit{tag}(n)$ has no terminator in $es$ (T for a live tag, F for a
+fresh one). Then $e$'s obligation is the same in $es'$ as in $es$:
+
+1. $\mathit{Ext}_{es'}(e) \iff \mathit{Ext}_{es}(e)$  (B2).
+2. $W_e(es') = W_e(es)$. Let $s \in W_e(es')$, so $\mathsf{end}_s \prec_{es'} e$.
+   Since $e \in es$ and $n$ is last, $\mathsf{end}_s \neq n$, so
+   $\mathsf{end}_s \in es$ and $\mathsf{end}_s \prec_{es} e$ (B1). Then
+   $s \in \mathit{Com}(es)$, so $s \neq \mathit{tag}(n)$, and $\mathit{set}$,
+   $\mathit{wr}$ of $s$ are unchanged (B4). The converse is the same argument
+   read backwards.
+3. $\max_{\mathit{AR}}$ on $W_e$ is the latest $\mathsf{end}$, and the order of
+   old $\mathsf{end}$s is unchanged (B1).
+4. The writer's transaction is unchanged (B5), so $S \vdash \mathsf{Write}(x, v)$
+   is unchanged.
+
+/New read./ $n = \mathsf{get}(l, v)@t$ fired by Get-Mem, so
+$\Lambda_t(l) = \bot$ and $v = \sigma(l)$. $W_n(es') = \{ s \in \mathit{Com}(es) \mid \mathit{set}_{es}(s, l) \}$,
+because every $\mathsf{end}_s \in es$ precedes $n$. Store at $C$:
+
+$$\sigma(l) = \begin{cases} \mathit{wr}(s^*, l) & s^* = \text{the committed writer of } l \text{ with the latest } \mathsf{end} \\ \sigma_0(l) & \text{no committed writer of } l \end{cases}$$
+
+which is $U$'s obligation for $n$ with $v = \sigma(l)$.
+
+| rule        | new obligation                                      | old reads                 |
+|-------------+-----------------------------------------------------+---------------------------|
+| Begin       | none (no get)                                       | frame; fresh tag (F)      |
+| Get-Log $l$ | none: $\Lambda_t(l) \neq \bot$, so by $L^-$ $t$ has accessed $l$ and $n$ is not external | frame; $t$ live (T) |
+| Get-Mem $l$ | $n$: $v = \sigma(l)$ is the latest committed value (Store) | frame; $t$ live (T)  |
+| Set-Log, Set-Mem | none (no get)                                  | frame; $t$ live (T)       |
+| Commit      | none (no get; $t$ was already covered, $U$ is over all $T$) | frame; $t$ live (T)  |
+| KCas-Retry, Retry | none (no get)                                 | frame; $t$ live (T)       |
+| Adm         | no event                                            | unchanged                 |
+
+$\square$
+
+**** What it rests on
+
+- From part (a)'s $\mathit{Inv}$: Ids (B1, B2), F and T (the new tag has no
+  terminator), Store (the Get-Mem row), L (Get-Mem is the first access).
+- New: $L^-$ (the Get-Log row). It is the only new invariant.
+- Lemma B (B1, B2, B4, B5).
+- Not used: Cur, R, KCasOk. Validation plays no part in $\textsc{Ext}_u$; it
+  is what part (a) needs.
+
+**** Open: is $\mathit{VIS} \subseteq \mathit{AR}$?
+
+Cerone's VIS is a relation on transactions with $\mathit{VIS} \subseteq \mathit{AR}$.
+Ours is heterogeneous ($\mathit{Tx} \times \mathit{Op}$), so the axiom has to be
+restated. Candidate, lifting the operation to its transaction:
+
+$$\mathit{VIS}(S, e) \;\Rightarrow\; S \neq \mathit{tx}(e) \;\wedge\; S \xrightarrow{\mathit{AR}} \mathit{tx}(e)$$
+
+Sketch for the witness. $S \in \mathit{Com}$ and $\mathsf{end}_S \prec e$.
+- $S \neq \mathit{tx}(e)$: $\mathsf{end}_S \prec e$ and no event of $S$ follows its $\mathsf{end}$ (Lemma N).
+- $\mathit{tx}(e)$ finished, terminator $f$: $e \prec f$ (Lemma N), so
+  $\mathsf{end}_S \prec e \prec f$, AR's first clause.
+- $\mathit{tx}(e)$ pending: $S$ finished, $\mathit{tx}(e)$ not, AR's second clause.
+
+Open:
+1. Is this the right restatement, or should the axiom also require a
+   /prefix/ property (if $S' \xrightarrow{\mathit{AR}} S$, $S'$ committed and
+   $\mathit{VIS}(S, e)$, then $\mathit{VIS}(S', e)$)? For the witness it holds
+   (commit order), but it is a separate axiom.
+2. Should it be a field of $\textsc{Ext}_u$'s statement (a well-formedness
+   condition on $H$), or a separate lemma about the witness?
+
+**** Lean plan (same structure as part (a))
+
+| file                        | contents                                          |
+|-----------------------------+---------------------------------------------------|
+| =ExtStatement.lean=         | add $\mathit{VIS}$, $W_e$, $\textsc{Ext}_u$, $U$  |
+| =ExtConsistencyLogBack.lean= | $L^-$: one lemma per rule                        |
+| =ExtConsistencyU.lean=      | $U$: frame for old reads, Get-Mem for the new one, one lemma per rule |
+| =ExtConsistency.lean=       | two new fields in $\mathit{Inv}$, two new tables in =inv_ext=, =extU_witness= by projection |
+
+/Status (2026-11-18)./ Done, no =sorry=: =extU_witness : Run C_0 τ C' → (witness τ).ExtU (visOf (events τ))=.
+$U$ is stated on the event list (=UInv=, =ReadOk=, =WVis=) and translated to
+the history once, by =extOp_of_uinv= (the design pattern above), then
+restricted to uncommitted $T$ by =History.extU_of_extOp=.
+
+* TODO Opacity / VIS
+* Transcript
+Does it make sense you take the trace and you have to filter it and then you apply induction on it then every transaction there is a committed transaction. and then you can do your inductive reasoning.
+
+dc :: So in that case, why will proof by induction work? Because the filter will give me a set of committed transactions. So I mean given this(antecedent), I need to show this (consequent),
+
+kn :: you probably need to think about why this will break here, right?  No, I mean, we have been saying it okay, like A A doesn't know whether A will. Yeah, A need not, you know, kind of read the most recent AL. When can that happen?  If you know it's someone not committed and then use its converse. So think about cases where, you know where this proof goes wrong.
+
+Okay.  So like what can maybe happen is that maybe yeah, I mean A, that particular transaction may not commit at all, right? So that will become false. This will become false.  No, but at this point, I mean, it vacously true I think that's what KC that I mean because it's not committed. but if I filter out the transaction set with two all committed, then for all T, I will have all committed transactions. Then I don't have anything to induct on because now I'm operating on a set.
+
+No, you have a trace.  You have a filter.
+
+The problem in this reasoning in the original trace, right, is that when a commit action happens, let's say the last step is a commit. A is a commit. Now at that point, you are to reason about all the reads that happen in that transaction. and say that, oh, they must have read from the most recent ar order.  The read step is not the issue, because then the read says step it has not committed, so this vacuously holds. But the commit step is a problem. Because at this point this transaction is coming in the committed set, and now you have reason about every read that it makes.  You know, it must have read from the most recent. Did you understand it?
+
+So I'm just trying to follow along the induction on runs.  So when you're doing induction on run, when this last step is a read, and let's say this step belongs to some transaction T. at this point, T has not committed. So you inductively assume that you know, your statement that you want to prove holds. It will continue to hold after this step holds.  Because there has been no changes in the set of comitted transaction. But when the last step A is a commit action, at that point there is a change in the set of committed transactions. Because one more transaction is committed.  So by your inductive hypothesis, all other transaction have already committed. They will continue to satisfy this. But now for this newly committed transaction, you're obligations to prove. which is where you won't able to prove because your inductive hypothesis is not strong enough.  
+
+How do you prove this? The same problem will happen in your filtering case.   Maybe guard with an inductive invariance, you need to say something about the read as it happens. If you know that it's definitely going to be committed. Then after the step also the read itself, you need to say that, yes, it's trying to read the most recent.  So that should be part of empothesis. something like you can actually say that because reads from the memory, right? So you can say that the value in memory is actually the most recent value.
+
+
+It's all from a committed..  So that's the point you need to add., I think you need to do the filtering step definitely. And then you need to  have strengthen the syrup to both, like, saying something about the memory street and linking it with the community transactions.. Okay.  Where will that come in you? You need a stronger statement, which we need to prove, and then that will imply this exceed, right? Yeah..  Now, I mean, you cannot ignore right as well, because you write also you have this obligation. I'm willing to show that when the right happens.'s not. Commit is the one.  Comment to show that because at you will write in memory, right. to share the memory is the most recent. Yeah, but even in the right case, I need to hold that invariant true that when a right happens and a right to the log, it wouldn't change it. No, but when I see an A and a A is a right, and I know that this right will eventually comeit, then I need to act differently than when I see a right which I know will not commit.  So there is no committ. Everything is committed. You are filtering out all the uncommitted transactions.  There's a filter step first. That information already we have in the log So instead of. I just wanted to show one what I was doing.  In the paper, what was mentioned was B-verse of E intersection Sex. That is also an invariant only for by by stating that if I am not, uh uh the history of event X doesn't have the history H doesn't have an event for X and the PO inverse of E hasn't touched X. that intersection if it is null. That's all about the first rate.  Yeah. That's what external talks about. Internal enters solar rates.  So you're only interested about the first rate. Correct. So now that we have the log where we are logging, whether the X location has been touched or not.  So what exactly is happening is within the transaction, if I'm seeing an X first, my first reaction to that is that is this X in the log and then I'm checking whether it is in the memory. So Yeah, so if my log itself is bought, then I am saying that that trace, which has this new event A, is this correct, which is for all event that exist in the trace along with this new no access of X with the transaction T or this event E has been made. Something is missing here, I'll try to figure it out, because if I have a set of X, if I have a get of X2, then the record in the log will be X, let's say it was zero initially, so it could be X, 2.  Now, if you do get to Because originally the store had this is the first operation X. Correct. So log will have nothing before this. Before this, log will have nothing.  So you read from the memory. I read from the memory. So if you are getting to your reading from 2?  Yeah, sorry, 22. Now if I am doing a set of X3 Why are you worrying about the set? In the same transaction?  In the same transaction. Then my log will say x, 2, three. And now if I say another set x5, my log will say x25.  So that original value I am not changing is there a way I can leverage that information to reason about external consistency by saying that I am only reading X. So extern consistency is reading from a committed transaction. In my log, I have that information as the second element of that log. That's the only one.  The first rate Your log has the information. I mean that's not the. The question is whether that information that you have that you read to on the first thing.  How do you justify them to?. So to justify that too, you need to say Because you read it from memory. No, that is only just the first part of that predicate, which is, we are only doing extra extraernal consistency, right?  Yeah. So even within external consistency, that first rate is just this part. Yeah.  So you need to justify that, right, basically. In fact, that's what that is right, the T that redex in in the theore implies WXT equal to five or maxhere. That's you need to justify that rate.  I'm talking about the theorem. need to justify that this you read. E there were rights, no writing transactionsed for it, or you know you are reading from the most recently committed transaction per year. This is what you need is justify for that.  Or justify that for. The issue is that at this point, when do read you don't even know whether it's going to commit on. It has not committed yet when you doing the read.  And are two separate issues Do you understand why we can't do induction runs? Yes, that part I understood that why we can't do induction on runs. Rather, I mean we can't do it, the point is during read, you on obligations during the proof obligation will come during incomementally.  I will comment, you to say, that okay, you at that log, let's say, X. Now you need to justify why you know, two is correct. Two is correct, yeah. So I was I was trying to ask like mostly that once we have this log information.  Yeah, log we have from log, you can see. So in log, it's right, you will get the the first value that you read in which is what this redex is. And the last value that you write, which is what writeex is..  So yeah, log is sufficient. So in fact, that's right. So if your log, let's say x, V1V2 then you then there is the CN style X, V1, VX, V1 and write xV2.  That is true. This, you can probably prove separately. This is only over a log, right, rather over every transaction separately.  E the living don't even matter. Yeah, Either way, each transaction has its own log, so we have that. Okay, yeah, I was mostly asking like, how will we do it once we have this log?  Maybe I'll look around. Okay. That was the part one of it.  I think I have to go back and the second part of it was the uncommitted transaction. So last time we spoke, I think Karthikar mentioned we need to reintroduce Viz.isions to Operations. Oper and c paper.  Your is a trace of events, right? Yeah, What is an optation I mean, operation is an event, but Operation is an event or Operation is an event. operation I defined as all events are begin get set, everything, but operation is just a get and asset. And those are the only two in fact, you only needed between transaction and No, we would need set also because we want to say that the effect of set hasn't doesn't log We don't need to think about shit.  Okay, right? Um. Okay..  Okay, so, um I have defined Waze as a predicate, but we can define it as a set also, but so we have defined it as a given an event E um we are so it's a relation between uh event and transaction. So it a set of transactions?? I mean, we can define ways either as a set or as a predicate.  So for now I have defined it as a predicate. So all the transactions that are visible to this event? Yes.  All the transactions that are visible to the event and not all the events that are visible to a transaction. So given an event, SS committed and the because it's a committed, we we would know that the S will have an NS. So within the tr trace, if the end of S lies before the EVT, it will collect all this all these transactions and then what we are are doing is..  Why do you need is South in the cony? Ceri vipor is between transaction transaction. Yeah.  So. Yeah, fine. This might be wrong because this is how, because think the paper also mentioned ways and AR have a partial total order relation that can only happen if that you mentioned that the domain needs to be sane, but now we are changing that so nothing will hold.  It's just a different. not the same. Yeah. So Just say, I mean, with the Sma, S is committed and it is can define it easily as a.  Yeah, we can define it as a relation as well, So then what we are doing is this that for all transaction T in H, for all event in transaction, get XE external is the same thing as that POverse is intersection of HEventex. But this external is defined in our in our context is defined as a log. So this is also predicate.  So for all T, this, this, this, implies, which inverse of E intersection S, right of X is null. So this is for the first right that we are seeing for the event E. In that case, the value should be whatever is from the store, because the commit would have updated the store and then max of AR is the same like it it just plugs into the same formula. The only difference is that we now have a new Viz.  This might be not correct because I haven't run it on traces to verify this, but uh Why do you think it' okay? Yeah, I mean I have I don't have like a trace proof of it, but. Is the saying the same Same definition?  But the different notion of Yeah. So now essentially what we want is if the transaction is uncommitted. If I'm reading an X, it should be from the latest commit.  And if.. There's only four uncomitted.. It's far on commit.  You' For all belong. Oh, okay. Yeah, sorry.  So that there is a committed in that previous one, and this would be just uncomed. Or will it also cover uncommitted transaction? sorry, commit transaction.  No, but there is It's redundant. So this is discovers more than. So there in fact, I'm not even sure what about local re I mean, reating from local rights. is we should ignore those.  Yeah, but this is not that. So let's take an uncommitted transaction. Even for uncommitted transaction, it always reads from its log.  See, there's a right there. that alcom transitionions from the right first. It will not satisfy this. Because now here you are saying that you know, it's onlying the transions. so you should say that it's not the first rate, but more like it's the rate before the rates before the first.  All before the first. satisfy. I see. But for ComIT, I don't think this is required, because those are the committed exams will take care of..ent there are three where internales are committed and not committed. external committed is the one that we have.  This is external. I' committed. Last time we also discussed, we probably introduced another symbol, right?  Like similarly that T turns the redex and symbol. Another symbol to say that you mean all rights before all reads before the first. First right. for those.  No, you are. Yeah, I mean, last time we also discussed about this is a related because we discussed opacity and once again, all reads before first straight away. once the first rate happens, every subsequent read will lead from that. No, but read also. read doesn't logs.  Read doesn't log, but read logs. fine. So if you do read read is it? Yeah, I am read from from?  It will read from the log. It will read from the log. Read also the log.  Even if you do just one. Yeah. Okay.  So then I guess only for first. Yeah. It's only for first.  Same as the external committee fund. It's only true for first. You can limit it for it just for the first three.  If the ball leads before the first time, then read the same values. Yeah, but yeah, it's only to the first rate. Same as the external.  It talks about just the first rate, right? If you do read read, the second rate is going to read is it going to talk about the read that was done earlier?. Do we want to change that also read as the first read.  We have to maintain that even here. What I'm saying is not to change that definition. Change this one to talk about the first..  Should I like that same thing, like? T- style. Instead of this E equal to get.  Change it to T style Dex. Okay. Okay.  I had a question. Yeah, everything else will stay. Yeah.  And this one is Actually, what happens to Sorry, if you write this down, it's uncommitted. It doesn't tensure opacity, right? This definition is not pensuring.  It's just saying that it has to come from committed one. Yeah. Okay, okay.  And opacity will be something stronger And our interpretation here doesn't satisfy opacity.acity would be I mean essentially remove that decommitted from external or even uncommitted as committed. There is a paper which definedacity asacities, defined as strict serializability for committed and uncommitted transactions, but rights are invisible. So it's actually that Rashid Kara's paper, where it defined the same way than it gave a trace of T and then it did something very simple. to what we do in linearzability, like drop the avorted transaction, create a real-time order between them and then reason about transactions that are visible, like PO ordered before this transaction and then capture the effect of those transactions to reason about reads, but then it also said that we will not be like if there is an aborted transaction, which is writing something and then there is a read following that, then because that transaction is not committed, the read should still read from the store and not, which is like reading from the memory and not reading from the log.  So no, right about the transactions will not commit to the memory. Yes. So you will read from memory.  Yeah, so that's what they are saying. They are really filtered about your transactions will not contribute to. In fact, what are the transactions that you are Oh, it says committed.  Okay, fine. Theverse is defined on the committed transactions. That's what you are doing.  You are filering out about a transaction. But it doesn't give you aacity because you don't claim anything about whether they are coming from like overlapping transactions. You can just read one and two.  This doesn't prevent your implementation doesn't provide capacity and this does definition also as an enforceacity. I am still not very clear about what opacity as a property is. Like when I see the trace I'm like, okay, this, this, you come with a property like this, what is the property where you will say you will so, okay, is this property oracity?  will do if you had a implementation that allowed you remember we had this transaction T1 writing one on one to X and YT writing, two and two to and Y. And then T three, reading X equals one and Y equals two, and it'llot. But is that is that a set of trans transactions, the history satisfying this particular property?  Because it won't because the x equals to 1 is a read from a So max of AR A would be either T2 if it is T1 T2 T3. So max of A would be T2 if it is T2, then why should read the latest of no, right, for because you are relating events to this one. X. might only see the first transaction T1.  So Visin was a X might just be T1. The singleton said T1. Visin was a Y is.  So both of the transactions are committed? No, no.'s not going to give you. So, both of the transactions are committed and then you do T3, you won't you won't see one, too, right?  We want to have the executive where you want to see 1, too. Okay. So what is the execution?  So T1 executes sex equals one, y equals one, right? That transaction finishes, then the first rate of x and T3 happens. So it's sees one.  Then T2 fully executes. So it writes X equals to Y equals two. Then read of Y happens.  Is that read? Yeah... That's RSCU.  And what I'm asking is, that's RSCU, right? Yeah. Does your implementation allow HSCU?  No. I mean, it doesn't. Your implementation doesn't allow HC.  You're not doing validation for every read. Oh, yeah, yeah, yeah. Okay.  I'm just validating before comment. Okay. In which case, does your instmentation satisfy this one, this particular property?  Does that executionisf you reading from one transaction and then reading from other trans. Think about just that execution, right? You have T1 committing, then T3 sexy redex happens.  So it's sees one. Then T2, right? Then you read you read Y equals two. right?  That's the entire entire trace. That's that trace satisf prover. In fact, there is an easy fix for a capacity, right?  Which is that, it's too strong. I was thinking, maybe we first answered this question then we can.. So there are two C is.  E is of Y3. What ising of? T1 what is of?  T does it satisf? So for is reading. is it true that you know, if you take vis verse of Evan and then do Vis verse of E is just will be just value T1 is right that you can read. Okay.  Yeah, you' doingverse will be, but here will be you are actually reading from Y. Both will be satisfied. So this weaker property is a propacity.  Let's see.acity would be basically applying our definition for all transactions, the external the original external consistency, but for all transactions.ive water commit. So you would still require even transactions which abort, you know, to read from every read in that should read from the most the Max. This is what you mentioned is strict civilvisibility for both committions, but with rights of uncommitted being invisible.  So rights of uncomitted are no. But reads how to still satisfy the property that they read from the maximum transaction. So basically AR will be a mut order on all transactions, whether they commit or not.  That's I have one more question. This is the official definition of R's cube from some bescent net paper where they don't mention anything about math, but it is about two transactions. So H has a reke, if only if T is not T2 and T has a reed XY with uh such and such, uh and then Tvan read with T2 right um which does what?  So T1 does what is it? I mean different papers often have differentations, So that turn styles is it the same as satisf or yeah, is it timing? Especially in this database world written. might not mean the same thing..  But which paper is attracted to? It. What was the question?  The question was the RC itself doesn't have any maximum property. It's the formal definition only has a red and a right. But it is between two transactions.  Only two. Because in our example to BCube, we needed three transactions. We need transions.  Yeah, I mean last time we were that we in two transions. two. Yeah. No, I mean if it is well studied in the data, we should look at their definition.  Okay, I'll I'll read more about this because until now I was thinking thinking vacity, like RQ leads to vpacity.. absence of RQ is absence of skillacity. And then opacity is defining on all transactions that are committed and uncommitted with uncommitted rights being invisible. So not of this read and write property on two transactions, like so there is a RSKw world from whose whose negation I'm able to so I'm able to get to opacity by negating something from RS set.  Yeah, the execution that we spoke about, right, is an example of ECube. And if you have a transaction system with opacity, that example should be disallowed.. And you should think about if you removed.  So our external is now external committed. right? If you remove that tea committed out, right, will that particular execution satisfy that external vacciom? It won't..  But we also need to show that that definitionandows reach cube. We need to define reach cube and say any transaction with ReCU will be disallowed by that definition. Right?  Because one is reading mean it is a nice definition, but we should say that the definition does not allow any transaction with a cube, for which definition like this is useful. We should define what a c is. Okay.  Yeah, yeah. Okay. Define what a R is on a a history.  And then say, this history is not admitted by that external. Okay. Okay, I don't have anything else for this week.  I mean, even the external consistency proof, you look at how I proved it. I mean, we have a we've discussed some ways of proving it, like filtering out and then doing a stronger inductive statement, uh improving it and then imp that But you look at now, you also first and try to prove and this would be easier to prove it. Yeah, that's true..  And then this new I mean definition of opacity that we just discuss. We try to formalize that. See, it is to read.  Yeah, yeah. Okay. Good.  Thank you.
