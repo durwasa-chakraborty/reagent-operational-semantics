@@ -26,10 +26,20 @@ inductive Label where
   | retry : TxId → Label
 deriving DecidableEq, Repr
 
-/-- A trace label is *either* a transition label *or* an administrative step
-`ℓ_adm` (Definition "Trace").  -/
+structure Event where
+  -- NOTE id is strictly for identifier and does not harbor monotonic increasing or decreasing properties
+  id : EvId
+  label : Label
+deriving DecidableEq, Repr
+
+/-- A trace label is *either* an event *or* an administrative step `ℓ_adm`
+(Definition "Trace").
+
+An event, not a bare `Label`: the id is minted by the rule that emits it, so it
+travels in the trace from the start. Nothing downstream has to invent names for
+events afterwards. -/
 inductive TLabel where
-  | ev  : Label → TLabel
+  | ev  : Event → TLabel
   | adm : TLabel
 deriving DecidableEq, Repr
 
@@ -65,6 +75,10 @@ The premises the document states as side conditions are here instead written
 into the input configuration: `λ = ⊥` for `Begin`, and `λ = i` together with
 `θ = t` for the transactional rules, which is what binds `i` and `t`.
 
+NOTE Every rule that emits an event also mints an id: it picks an α for userIds and records it.
+     The relation is non-deterministic in α and all a runknows about its ids is that they are pairwise distinct.
+
+
 `Begin`'s redex is `begin ; e`: the `begin` becomes `()` in place, and the
 continuation `e` is saved as `Ê` — exactly the body `Retry` reinstates. It mints
 `nextTx` as the document's `t_fresh`, bumps the counter, and snapshots the store.
@@ -80,28 +94,35 @@ retried attempt must re-acquire the lock and runs under a *fresh* id.
 `adm` lifts `⇝` to an `ℓ_adm`-labelled step. It leaves the configuration
 entirely alone and carries no `λ = i` premise: any thread may take a pure step,
 inside a transaction or not. -/
+-- NOTE the α ∉ List of ID is what is saving us from a fresh ID; rest everything remains the same
+--      we are emitting the α (that is the whole point of the exercise)
 inductive Head : ThId → Config → Expr → TLabel → Config → Expr → Prop where
-  | begin {σ θ E snap body n i e} :
-      Head i ⟨σ, none, θ, E, snap, body, n⟩ (.seq .begin e)
-        (.ev (.begin n))
-        ⟨σ, some i, some n, E, σ, e, n + 1⟩ (.seq (.val .unit) e)
-  | get {σ i t E snap body n l v} :
+  | begin {σ θ E snap body n u i e α} :
+      α ∉ u →
+      Head i ⟨σ, none, θ, E, snap, body, n, u⟩ (.seq .begin e)
+        (.ev ⟨α, .begin n⟩)
+        ⟨σ, some i, some n, E, σ, e, n + 1, α :: u⟩ (.seq (.val .unit) e)
+  | get {σ i t E snap body n u l v α} :
+      α ∉ u →
       σ l = v →
-      Head i ⟨σ, some i, some t, E, snap, body, n⟩ (.getc l)
-        (.ev (.get l v t))
-        ⟨σ, some i, some t, E, snap, body, n⟩ (.val (.num v))
-  | set {σ i t E snap body n l v} :
-      Head i ⟨σ, some i, some t, E, snap, body, n⟩ (.setc l (.val (.num v)))
-        (.ev (.set l v t))
-        ⟨update σ l v, some i, some t, E, snap, body, n⟩ (.val .unit)
-  | eend {σ i t E snap body n} :
-      Head i ⟨σ, some i, some t, E, snap, body, n⟩ .eend
-        (.ev (.eend t))
-        ⟨σ, none, none, E, snap, body, n⟩ (.val .unit)
-  | retry {σ i t E snap body n} :
-      Head i ⟨σ, some i, some t, E, snap, body, n⟩ .retry
-        (.ev (.retry t))
-        ⟨snap, none, none, E, snap, body, n⟩ (.seq .begin body)
+      Head i ⟨σ, some i, some t, E, snap, body, n, u⟩ (.getc l)
+        (.ev ⟨α, .get l v t⟩)
+        ⟨σ, some i, some t, E, snap, body, n, α :: u⟩ (.val (.num v))
+  | set {σ i t E snap body n u l v α} :
+      α ∉ u →
+      Head i ⟨σ, some i, some t, E, snap, body, n, u⟩ (.setc l (.val (.num v)))
+        (.ev ⟨α, .set l v t⟩)
+        ⟨update σ l v, some i, some t, E, snap, body, n, α :: u⟩ (.val .unit)
+  | eend {σ i t E snap body n u α} :
+      α ∉ u →
+      Head i ⟨σ, some i, some t, E, snap, body, n, u⟩ .eend
+        (.ev ⟨α, .eend t⟩)
+        ⟨σ, none, none, E, snap, body, n, α :: u⟩ (.val .unit)
+  | retry {σ i t E snap body n u α} :
+      α ∉ u →
+      Head i ⟨σ, some i, some t, E, snap, body, n, u⟩ .retry
+        (.ev ⟨α, .retry t⟩)
+        ⟨snap, none, none, E, snap, body, n, α :: u⟩ (.seq .begin body)
   | adm {C i r e} :
       Local r e → Head i C r .adm C e
 

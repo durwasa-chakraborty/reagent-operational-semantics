@@ -1,0 +1,372 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+
+\lstdefinestyle{lean}{
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{blue!60!black},
+  commentstyle=\color{black!55},
+  columns=fullflexible,
+  breaklines=true,
+  morekeywords={theorem,def,inductive,structure,Prop,Type,by,induction,cases}
+}
+\lstset{style=lean}
+\newcommand{\lean}[1]{\texttt{\small #1}}
+
+\title{Reagent: what the mechanised lemmas are for}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\noindent
+A plain-English guide to the Lean development: what each definition and lemma
+exists to do, and why the proof needs it. Proofs are sketched in a line --- most
+are inductions, and the content is \emph{which} induction and on \emph{what}.
+Part~\ref{part:model} covers the model in \texttt{Reagent/Trace.lean};
+Part~\ref{part:int} covers the proof of internal consistency in
+\texttt{Reagent/IntConsistency.lean}.
+
+\tableofcontents
+
+\section{The model: \texttt{Trace.lean}}
+\label{part:model}
+
+\noindent
+This note says, in plain English, what each lemma in \texttt{Trace.lean} exists
+to do and why the development needs it. Proofs are only sketched --- almost
+every one is an induction, and the interesting content is \emph{which} induction
+and on \emph{what}.
+
+\subsection{The setting, in one paragraph}
+
+A trace is a list of labels. A label is only a description: a transaction that
+reads the same location twice emits \lean{get(x,5)@t} twice, and those are two
+different things that happen. So we work with \emph{events}: an event is
+\lean{(id, label)}, where the \lean{id} is a \textbf{name}. The name has exactly
+one job --- to tell two occurrences of one label apart. It is never compared,
+never ordered, and it is not a position. What orders two events is the list they
+sit in: \lean{OccursBefore es e f} holds when \lean{es} cuts as
+\[
+  \texttt{es} \;=\; p \;\mathbin{+\!\!+}\; [e] \;\mathbin{+\!\!+}\; m
+  \;\mathbin{+\!\!+}\; [f] \;\mathbin{+\!\!+}\; s .
+\]
+Everything below is about turning that definition into a usable order, and about
+getting from a trace (labels only) to a list of events (labels with names).
+
+\subsection{The shape of the order}
+
+\paragraph{\lean{OccursBefore.split} and \lean{OccursBefore.of\_split}.}
+These are the two directions of the definition. \lean{split} takes a proof that
+\lean{e} occurs before \lean{f} and hands back the cut $p, m, s$; \lean{of\_split}
+takes a cut and hands back the proof. Between them, every later proof can stop
+reasoning about the inductive rules \lean{base}/\lean{pre}/\lean{post} and reason
+about lists instead, which is much easier. \lean{split} is by induction on the
+derivation --- the three rules give the three cases --- and \lean{of\_split} is
+the three constructors applied in order.
+
+\subsection{What the names buy}
+
+\paragraph{\lean{OccursBefore.id\_ne}.}
+If \lean{e} occurs before \lean{f} in a list whose names are all distinct, then
+\lean{e} and \lean{f} carry different names. Trivial-sounding, and it is the
+whole reason events carry names at all.
+
+\paragraph{\lean{OccursBefore.irrefl}.}
+No event occurs before itself. This is \lean{id\_ne} read at $f := e$: it would
+say $e.id \neq e.id$. Note what fails without names: on a trace
+\lean{begin@t} $\cdot$ \lean{get(x,5)@t} $\cdot$ \lean{get(x,5)@t}, a relation on
+\emph{labels} really does put \lean{get(x,5)@t} before \lean{get(x,5)@t}, so it
+is reflexive and cannot be a strict order. The names are what make those two
+occurrences two events, and irreflexivity is the first thing they pay for.
+
+\paragraph{\lean{UniqueIds.split\_unique}.}
+If a list cuts around one event in two different ways, the two cuts are the same
+cut. This is the precise sense in which a name \emph{locates} an event: it occurs
+in one place. Proof is an induction on the first prefix, using distinctness to
+rule out the mismatched cases.
+
+\paragraph{\lean{OccursBefore.trans}.}
+If $e$ is before $f$ and $f$ is before $g$, then $e$ is before $g$. The proof is
+the reason \lean{split\_unique} exists: take the cut around $e,f$ and the cut
+around $f,g$; both are cuts of the same list at the same event $f$, so they line
+up, and gluing them puts $f$ inside the middle segment of a single cut around
+$e,g$. Nothing here compares names as numbers --- distinctness is used only to
+know that the two cuts are cuts \emph{at the same place}.
+
+\subsection{Totality}
+
+\paragraph{\lean{mem\_split}.}
+An element of a list splits the list around itself. Pure list plumbing; Lean's
+core does not ship it in this form.
+
+\paragraph{\lean{OccursBefore.total}.}
+Any two events of one list are ordered one way or the other, or are the same
+event. Worth noticing: this needs \emph{no} hypothesis about names. Membership
+alone decides it, because a list already puts one of its elements before the
+other. Names are needed for irreflexivity and transitivity, not for totality.
+
+\subsection{Program order}
+
+\lean{po} of a transaction is defined, not assumed: \lean{poOf es t} is just
+\lean{OccursBefore es} restricted to that transaction's events (the restriction
+is carried by the subtype, since \lean{eventsOf es t} already demands the tag).
+So its order properties are theorems, and Cerone's model requires $(E, po)$ with
+$po$ a total order --- that is the obligation these four discharge.
+
+\begin{itemize}
+  \item \lean{poOf\_irrefl}, \lean{poOf\_trans} --- inherited directly from
+        \lean{OccursBefore}.
+  \item \lean{poOf\_antisymm} --- holds because \lean{po} is \emph{strict}: its
+        two hypotheses together give $a$ before $a$, which is impossible. If one
+        prefers the reflexive reading of $po$, this is the clause that stops
+        being vacuous and starts doing work.
+  \item \lean{poOf\_total} --- trichotomy on the transaction's events.
+\end{itemize}
+
+All but \lean{poOf\_total} take \lean{UniqueIds es} as a hypothesis, which is
+discharged once and for all in Section~\ref{sec:naming}.
+
+\subsection{From a trace to events: one step at a time}
+
+The operational semantics produces a run, and a run grows at the \emph{back} ---
+each step appends its label to what has been emitted. Lists, however, recurse at
+the front. So proofs about runs need snoc-shaped facts: what does \lean{events}
+do when one more label arrives?
+
+\paragraph{\lean{helperEventsFrom\_append}.}
+Naming $\tau \mathbin{+\!\!+} \sigma$ is naming $\tau$, then naming $\sigma$ with
+the counter started at $i + |\tau|$. The general statement; the next two are the
+cases actually used.
+
+\paragraph{\lean{events\_snoc\_ev} and \lean{events\_snoc\_adm}.}
+One more transition label appends exactly one event at the end;
+one more administrative step appends nothing. These two are what let an induction
+over a run proceed: at each step you know precisely how the event list changed,
+so an invariant stated about \lean{events $\tau$} can be pushed through the step.
+Every case of \lean{inv\_store} and \lean{inv\_int} in
+\texttt{IntConsistency.lean} begins by rewriting with one of them.
+
+\paragraph{\lean{helper\_id\_ge}, \lean{helper\_id\_lt}, \lean{events\_id\_lt}.}
+Every name handed out while naming $\tau$ lies below $|\tau|$. The point is
+\emph{freshness}: the event appended by the next step is named $|\tau|$, so it is
+not a name already in use. This is the only place the counter's increasing-ness
+is used, and note what it is used \emph{for} --- to show names do not repeat,
+never to conclude that one event precedes another.
+
+\subsection{The naming, discharged}
+\label{sec:naming}
+
+\paragraph{\lean{uniqueIds\_helper} and \lean{uniqueIds\_events}.}
+\lean{UniqueIds (events $\tau$)}: the canonical naming really does hand out
+distinct names. This is the hypothesis every \lean{poOf\_*} theorem carries, so
+proving it once means the consistency proofs never have to drag it around.
+
+\paragraph{\lean{map\_helper} and \lean{eventsOf\_events}.}
+\lean{EventsOf $\tau$ (events $\tau$)}: the canonical naming satisfies the
+\emph{specification} of a naming --- its labels spell out $\tau$ exactly, in
+order, with the administrative steps dropped, and its names are distinct.
+
+This pair deserves a comment, because it is the only place where the two halves
+of the design meet. \lean{EventsOf} is a predicate: it says what it \emph{takes}
+to be a naming of $\tau$, without picking one, so any list of events meeting it
+would do --- the names may be $7, 3, 99$ for all it cares. \lean{events} is a
+function: it picks one, because extracting transactions from a trace has to
+produce something concrete. \lean{eventsOf\_events} is the proof that the choice
+is legitimate. Without it, \lean{events} would be an assumption smuggled in as a
+definition; with it, the choice is a witness, and every theorem stated for an
+arbitrary naming applies to it.
+
+\subsection{Where they are used}
+
+\begin{itemize}
+  \item \lean{split}, \lean{of\_split}, \lean{split\_unique} --- machinery; used
+        only to prove the next two.
+  \item \lean{irrefl}, \lean{trans} --- used constantly, and in particular to
+        show that an event cannot be both before and after another, which is how
+        maximality arguments (``the last access before this read'') close.
+  \item \lean{total} --- what makes $(E, po)$ a total order, as the declarative
+        model demands.
+  \item \lean{events\_snoc\_ev}, \lean{events\_snoc\_adm} --- the spine of every
+        induction over a run: \lean{inv\_nextTx}, \lean{inv\_store},
+        \lean{inv\_int}.
+  \item \lean{events\_id\_lt}, \lean{uniqueIds\_events} --- freshness and
+        distinctness, i.e.\ the hypotheses everything else assumes.
+  \item \lean{eventsOf\_events} --- non-vacuity of the whole construction.
+\end{itemize}
+
+\section{Internal consistency: \texttt{IntConsistency.lean}}
+\label{part:int}
+
+\noindent
+Part~\ref{part:model} covered the model; this part covers the proof of internal
+consistency built on it. What matters here is which object each lemma bridges to
+which.
+
+\subsection{The gap the file has to close}
+
+\lean{Int} is a statement about \emph{events}: a read must carry the value of the
+$po$-last access to $x$ in its own transaction. The semantics knows nothing about
+events. Its rule for reading is
+\[
+  \sigma(l) = v \;\Longrightarrow\;
+  \langle \sigma, i, t, \ldots\rangle \;\xrightarrow{\ \mathrm{get}(l,v)@t\ }\;
+  \langle \sigma, i, t, \ldots\rangle,
+\]
+that is: the value returned is whatever the \emph{store} holds, and the rule says
+nothing about what the transaction did earlier. So the whole file is one bridge:
+\begin{center}
+  \emph{why is the store's current value the one this transaction last left there?}
+\end{center}
+Under the lock it is, and that fact is \lean{inv\_store}. Everything before it is
+machinery to state and prove it; everything after it carries the fact up to the
+declarative model.
+
+\subsection{The axiom, restated}
+
+\paragraph{\lean{Label.accesses} and \lean{Label.accessVal}.}
+$HEvent_x$ --- is this label a read or a write on $x$ --- and the value such a
+label carries. \lean{accessVal} is an \lean{Option}, \lean{none} on
+\lean{begin}/\lean{eend}/\lean{retry}, which is how the type records that those
+carry no value.
+
+\paragraph{\lean{Transaction.PriorAccess} and \lean{MaxPriorAccess}.}
+$po^{-1}(e) \cap HEvent_x$, and its $po$-greatest element. Because $po$ is strict
+here, \lean{PriorAccess} does not have to say $a \neq e$ --- the old
+formulation did, when $po$ was $\leq$.
+
+\paragraph{\lean{Transaction.Int} and \lean{History.Int}.}
+The axiom verbatim for one transaction, then quantified over the history's
+transactions. Note what is absent: \lean{ar} never appears. \lean{Int} is
+intra-transactional, which is why it can be proved for \emph{every} history of a
+run rather than for some chosen one.
+
+\subsection{Inducting over a run}
+
+\paragraph{\lean{Run.split}.}
+A run splits wherever its trace does: if the trace is $\mathit{pre} \mathbin{+\!\!+}
+\mathit{post}$, there is a middle configuration.
+
+\paragraph{\lean{listReverseInduction} and \lean{Run.reverseRecOn}.}
+A run grows at the back, so the useful induction is ``a run that emitted $\tau$,
+then took one more step''. Lean's list recursor goes the other way, so
+\lean{listReverseInduction} builds the snoc recursor by running the ordinary one
+over the reversed list, and \lean{Run.reverseRecOn} lifts that to runs. Every
+invariant below is proved with it; without it each proof would have to reason
+about a step at the \emph{front}, where the configuration is not yet the one the
+invariant talks about.
+
+\paragraph{\lean{OccursBefore.snoc\_last} and \lean{snoc\_mono}.}
+The two facts about appending one event: everything already in the list occurs
+before the newcomer, and an order that already held still holds. The second is
+just the \lean{post} constructor. These are what let a maximality claim survive a
+step --- the newcomer is after everything, so it cannot sneak between two older
+events.
+
+\subsection{The invariants}
+
+\paragraph{\lean{inv\_nextTx}.}
+Every tag occurring in the run, and the live tag, is below \lean{nextTx}. This is
+the mechanised form of ``\lean{begin} mints a \emph{fresh} id''. Its purpose is
+one case of the next proof: when a transaction begins, the invariant about its
+past has to hold vacuously, and that is exactly the claim that nothing in the run
+so far carries its tag. Without freshness a reused id would splice two unrelated
+attempts into one transaction.
+
+\paragraph{\lean{LastAccess}.}
+``$a$ is the last thing $t$ did to $x$ so far'': $a$ is an access of $t$ to $x$,
+and no access of $t$ to $x$ occurs after it. Stated with \lean{OccursBefore},
+not by comparing names.
+
+\paragraph{\lean{inv\_store} --- the heart of the file.}
+If $t$ holds the lock, then for every location $x$, the value in the store is the
+one carried by $t$'s last access to $x$. Proved by induction over the run, one
+case per rule, and the lock discipline is spent in exactly three of them:
+\begin{itemize}
+  \item \lean{get}/\lean{set} on $x$: the new event \emph{is} the last access ---
+        anything else would be before it, contradicting maximality --- and the
+        value it carries is what the rule put in the store.
+  \item \lean{begin}: the tag is fresh, so by \lean{inv\_nextTx} the hypothesis
+        ``this tag already has an access'' is false and the case is vacuous. A
+        transaction starts with no history.
+  \item \lean{eend}, \lean{retry}: both clear \lean{activeTx} in the same step,
+        so there is no live transaction for the invariant to constrain. This is
+        why \lean{retry}'s rollback of the store is harmless: a rollback never
+        lands inside a live transaction.
+\end{itemize}
+
+\subsection{From the store back to the events}
+
+\paragraph{\lean{OccursBefore.mem}.}
+Related events are elements of the list. Plumbing.
+
+\paragraph{\lean{OccursBefore.restrict\_append}.}
+If $a$ and $b$ both lie in $A$, and $a$ occurs before $b$ in $A \mathbin{+\!\!+} B$,
+then $a$ occurs before $b$ in $A$ alone. This is the lemma that lets an older
+read's answer be computed in the prefix of the run rather than in the whole run
+--- without it, ``nothing lies between $a$ and $e$'' could not be transported
+from the long list to the short one. It needs distinct names: with duplicates,
+$b$ could occur twice and the cut found in $A \mathbin{+\!\!+} B$ need not be a cut
+of $A$. The proof splits $A$ at $a$ and asks where $b$ sits; after $a$ it is a
+direct cut, before $a$ it contradicts transitivity.
+
+\paragraph{\lean{uniqueIds\_helper}, \lean{uniqueIds\_events}.}
+\lean{UniqueIds (events $\tau$)} --- the hypothesis that \lean{irrefl},
+\lean{trans} and \lean{restrict\_append} all carry, discharged for the canonical
+naming so the main proofs never mention it.
+
+\paragraph{\lean{isAccess\_of\_accesses}.}
+Accessing $x$ makes a label a \lean{get} or a \lean{set}. Small, and needed at one
+precise point: to place an event into a transaction's $E$, whose membership test
+demands \lean{isAccess}.
+
+\paragraph{\lean{LastAccessBefore}, \lean{not\_occursBefore\_snoc},
+\lean{lastAccessBefore\_of\_snoc}.}
+``$a$ is the last access of $t$ to $x$ \emph{before} $e$'' --- the relativised
+form of \lean{LastAccess}, because \lean{Int} speaks about the state of affairs
+at a particular read, not at the end of the run. The other two say that appending
+a step does not disturb an older read's answer: nothing occurs after the newcomer,
+so the newcomer cannot be the thing that was missing.
+
+\subsection{The two theorems}
+
+\paragraph{\lean{inv\_int}.}
+\lean{Int} on the canonical naming: every read sees the value its own transaction
+last left at that location. Induction over the run again. Every case is
+bookkeeping except one --- a \lean{get} that \emph{is} the newly appended event,
+where \lean{inv\_store} on the prefix says the store already holds what the
+transaction last left, and the rule says the read returns the store. That single
+case is where the whole file lands.
+
+\paragraph{\lean{int\_of\_run}.}
+The translation from the canonical naming to an arbitrary history of the trace.
+\lean{HistoryOf} forces $T = \lean{transactionOf (events $\tau$) $t_0$}$, so $T.E$
+and $T.po$ unfold to the definitions, and \lean{MaxPriorAccess} becomes
+\lean{LastAccessBefore}. The only real content is maximality, and it is
+contradiction-shaped: given some $b$ lying between $a$ and the read, wrap $b$ as
+an element of $T.E$, feed it to the maximality hypothesis, and get either $b = a$
+or $b$ before $a$ --- both contradict $a$ before $b$ by irreflexivity and
+transitivity. Notably \lean{poOf\_total} is \emph{not} needed: nothing has to
+compare two arbitrary events, only to rule out an impossible one.
+
+\subsection{What is proved, and what is still assumed}
+
+With \lean{int\_of\_run} closed, internal consistency holds for every run of the
+semantics and \emph{every} history of that run:
+\[
+  \forall \tau, \forall H. \quad
+  \mathrm{Run}\;C_{\mathrm{init}}\;\tau\;C' \;\wedge\; \mathrm{HistoryOf}\;\tau\;H
+  \;\Longrightarrow\; H \models \mathrm{Int}.
+\]
+Two caveats worth keeping in view. First, the theorem says nothing if no $H$
+satisfies \lean{HistoryOf $\tau$ H}; that is what \lean{exists\_historyOf} is for,
+and it is still open. Second, \lean{Ext} is a different matter entirely: it reads
+\lean{ar}, which is assumed rather than defined, so it cannot be proved for every
+history once transactions may overlap --- under the lock \lean{ar} is forced, and
+the $\forall H$ form survives.
+
+\end{document}

@@ -45,6 +45,13 @@
 \newcommand{\setev}[3]{\textsf{set}(#1,#2)\,@\,#3}
 \newcommand{\elided}{\mathrm{actions}}
 
+%% ---- event identifiers, minted by the operational semantics ----
+%% every action-emitting transition mints a fresh uuid \eid, and the label it
+%% emits is the event \ev{\eid}{a}: the identifier together with the action.
+\newcommand{\eid}{\iota}
+\newcommand{\ev}[2]{\langle #1,\, #2 \rangle}
+\newcommand{\isfresh}{\ \text{fresh}}
+
 %% ---- abbreviations used in the worked-examples section ----
 \newcommand{\st}[1]{[\,l\,{\mapsto}\,#1\,]}          % store over the single location l
 \newcommand{\emap}[1]{\{#1\}}                          % thread map E
@@ -168,22 +175,36 @@ it}. The conclusion rewrites that redex in place and \emph{frames} the rest of t
 table, $E' = E[i \mapsto \ehole{\cdot}]$ with $E'(j) = E(j)$ for every $j \neq i$;
 the label above the arrow is tagged with the live transaction id $\theta$ (the third
 component of the configuration).
+
+Every transition that emits an action also mints an \emph{event identifier}
+$\eid \in \EventId$ for it, so that what appears above the arrow is the
+\emph{event} $\ev{\eid}{a}$: the identifier together with the action it names.
+$\EventId$ is a set of uuids. Its elements may be compared for equality and
+nothing else --- an identifier carries no position, no counter and no order, so
+``which event is this'' and ``when did it happen'' are kept apart: the first is
+$\eid$, the second is read off the sequence the run emits. The premise
+$\eid\isfresh$ means $\eid$ differs from every event identifier emitted earlier
+in the run, exactly as $\theta\isfresh$ does for transaction identifiers in
+\textsc{Begin}; it is what makes the identifiers of a run's events pairwise
+distinct, and so what lets two otherwise indistinguishable actions --- the same
+read, of the same value, in the same transaction --- be two events rather than
+one. The administrative reductions below emit no action and mint no identifier.
 \begin{figure}[ht]
 \small
 \begin{mathpar}
 \inferrule*[left=\textsc{Get}]{
-  E(i)=\ehole{\getc{l}} \\ \lambda = i \\ \sigma(l)=v
+  E(i)=\ehole{\getc{l}} \\ \lambda = i \\ \sigma(l)=v \\ \eid\isfresh
 }{
   \langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle
-  \xrightarrow{\getev{l}{v}{\theta}}
+  \xrightarrow{\ev{\eid}{\getev{l}{v}{\theta}}}
   \langle\sigma,\lambda,\theta,E[i\mapsto\ehole{v}],\hat{\sigma},\hat{E}\rangle
 }
 \and
 \inferrule*[left=\textsc{Set}]{
-  E(i)=\ehole{\setc{l}{v}} \\ \lambda = i
+  E(i)=\ehole{\setc{l}{v}} \\ \lambda = i \\ \eid\isfresh
 }{
   \langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle
-  \xrightarrow{\setev{l}{v}{\theta}}
+  \xrightarrow{\ev{\eid}{\setev{l}{v}{\theta}}}
   \langle\sigma[l\mapsto v],\lambda,\theta,E[i\mapsto\ehole{\unit}],\hat{\sigma},\hat{E}\rangle
 }
 \and
@@ -192,10 +213,12 @@ component of the configuration).
   \\
   \lambda=\bot
   \\
-  \theta\ \text{fresh}
+  \theta\isfresh
+  \\
+  \eid\isfresh
 }{
   \langle\sigma,\bot,\bot,E,\hat{\sigma},\hat{E}\rangle
-  \xrightarrow{\bbegin\,@\,\theta}
+  \xrightarrow{\ev{\eid}{\bbegin\,@\,\theta}}
   \langle
     \sigma,
     i,
@@ -207,18 +230,18 @@ component of the configuration).
 }
 \and
 \inferrule*[left=\textsc{End}]{
-  E(i)=\ehole{\eend} \\ \lambda = i
+  E(i)=\ehole{\eend} \\ \lambda = i \\ \eid\isfresh
 }{
   \langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle
-  \xrightarrow{\eend\,@\,\theta}
+  \xrightarrow{\ev{\eid}{\eend\,@\,\theta}}
   \langle\sigma,\bot,\bot,E[i\mapsto\ehole{\unit}],\hat{\sigma},\hat{E}\rangle
 }
 \and
 \inferrule*[left=\textsc{Retry}]{
-  E(i)=\ehole{\retry} \\ \lambda = i
+  E(i)=\ehole{\retry} \\ \lambda = i \\ \eid\isfresh
 }{
   \langle\sigma,\lambda,\theta,E,\hat{\sigma},\hat{E}\rangle
-  \xrightarrow{\retry\,@\,\theta}
+  \xrightarrow{\ev{\eid}{\retry\,@\,\theta}}
   \langle
     \hat{\sigma},
     \bot,
@@ -232,7 +255,9 @@ component of the configuration).
 \caption{Semantics of Reagent commands. Each rule fires on the redex of the
 active thread $i$; the transactional rules require $\lambda = i$ (only the
 owner thread may step), and the emitted label is tagged with the live transaction
-id $\theta$. Unlisted six-tuple fields are unchanged.}
+id $\theta$. Each rule also mints a fresh event identifier $\eid$, so the label
+is the event $\ev{\eid}{a}$ rather than the bare action $a$. Unlisted six-tuple
+fields are unchanged.}
 \label{fig:semantics}
 \end{figure}
 Figure~\ref{fig:semantics} gives a formal description of the transition

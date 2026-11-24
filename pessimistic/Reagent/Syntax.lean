@@ -23,6 +23,11 @@ abbrev TxId : Type := Nat
 abbrev ThId : Type := Nat
 /-- Immutable, `let`-bound variables. -/
 abbrev Var  : Type := Nat
+
+-- NOTE Instead of having a ℕ I am going ahead with UUID
+structure EvId where
+  uuid : String
+deriving DecidableEq, Repr
 /-- The shared store `σ : Loc → ℕ`. -/
 abbrev Store : Type := Loc → Nat
 
@@ -381,7 +386,10 @@ def Store.init_store : Store := fun _ => 0
 * `threadMap`    – the thread map `E`;
 * `snapshot`     – `σ̂`, the store as it was when the live transaction began;
 * `savedBody`    – `Ê`, the body to re-run after an abort;
-* `nextTx`       – the id `Begin` mints next.
+* `nextTx`       – the id `Begin` mints next;
+NOTE UUIDs are unique but we can't really prove it so we are carrying this List EvId and then a membership check to see
+     if the minted UUID is unique
+* `usedIds`      – every event id minted so far.
 
 The rules maintain `activeThread = ⊥ ↔ activeTx = ⊥`. `Begin` records `σ̂` and
 `Ê`; `Retry` rolls the store back to `σ̂` and re-arms the thread as `begin ; Ê`.
@@ -390,7 +398,9 @@ The rules maintain `activeThread = ⊥ ↔ activeTx = ⊥`. `Begin` records `σ�
 reused. That is not decoration — internal consistency is false without it, since
 a reused id would splice two unrelated attempts into one "transaction" whose
 read contradicts its own earlier write. It is also what keeps a retried attempt
-a *separate* transaction from the attempt it replaces. -/
+a *separate* transaction from the attempt it replaces.
+
+ -/
 structure Config where
   store        : Store          -- σ
   activeThread : Option ThId    -- λ
@@ -399,5 +409,6 @@ structure Config where
   snapshot     : Store          -- σ̂
   savedBody    : Expr           -- Ê
   nextTx       : TxId
+  usedIds      : List EvId
 
 end Reagent

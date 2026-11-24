@@ -3,3 +3,8 @@ defaultTargets = ["Reagent"]
 
 [[lean_lib]]
 name = "Reagent"
+srcDir = "pessimistic"
+
+[[lean_lib]]
+name = "Optimistic"
+srcDir = "optimistic"
