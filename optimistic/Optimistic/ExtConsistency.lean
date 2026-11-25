@@ -12,6 +12,10 @@ structure ExtInv (τ : Trace) (C : Config) : Prop where
   ids : (∀ e ∈ events τ, e.id ∈ C.usedIds) ∧ UniqueIds (events τ)
   -- F: used and live tags are below `nextTx`; a `begin` precedes its terminator.
   fresh : (∀ e ∈ events τ, e.label.tx < C.nextTx)
+  -- WARN multiple threads are executing tx concurrently, so a single thread can
+  -- execute multiple tx one after the other. θ so the question is C.txs j will return
+  -- which θ  ? Are we assuming that we each thread executes only one transaction?
+  -- NOTE each thread is in atmost one live transaction at a time.
     ∧ (∀ j t Λ Ê, C.txs j = some (t, Λ, Ê) → t < C.nextTx)
     ∧ BeginsBeforeTerm (events τ)
   -- D: two live threads never share a `t`.
