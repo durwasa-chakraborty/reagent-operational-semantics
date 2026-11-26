@@ -1,0 +1,70 @@
+#+TITLE: Optimistic track — top-down rebuild of Ext
+#+TODO: OPEN | PROVED GAP
+
+* Purpose
+
+Rebuild the Ext proof top down, adding one invariant clause at a time, each
+time a step case fails. Lean side: =Optimistic/TopDown.lean=.
+
+* Where we are (pin)
+
+** The theorem
+
+\[ \mathrm{Run}\ C_0\ \tau\ C \implies \exists H.\ \mathrm{HistoryOf}(\tau, H) \land \mathrm{Int}(H) \land \mathrm{Ext}(H) \]
+
+- $H$ is fixed once: $H := \mathit{witness}(\tau)$ (finish order). The $\exists$
+  is introduced only at the end, so all three conjuncts are about the same $H$.
+- $\mathrm{HistoryOf}$ and $\mathrm{Int}$ are *assumed* here (proved elsewhere).
+- $\mathrm{Ext} = \mathrm{Ext}_c \land \mathrm{Ext}_u$. We work on $\mathrm{Ext}_c$ first.
+
+** Strategy
+
+Ext alone does not survive a step (it says nothing about $\sigma$ or the logs),
+so strengthen:
+
+- (A) $\mathrm{Run}\ C_0\ \tau\ C \implies \mathrm{Inv}(\tau, C)$, by induction on the run
+- (B) $\mathrm{Inv}(\tau, C) \implies \mathrm{Ext}_c(\mathit{witness}\ \tau)$, by projection
+
+$\mathrm{Inv} := \mathit{true}$ makes (A) trivial and (B) impossible. Start from
+the smallest $\mathrm{Inv}$ that gives (B), and grow it.
+
+** Round 1: $\mathrm{Inv}(\tau, C) := P(\tau)$
+
+$P(\tau) = \mathrm{Ext}_c(\mathit{witness}\ \tau)$. In English: every committed
+transaction $T$ reads, from outside itself, the value left by the last
+committed transaction before it (in finish order) that wrote that location,
+or the initial value if there is none.
+
+- External read: a =get x= in $T$ with no earlier access to =x= by $T$
+  (otherwise it is Int's business).
+- Writers: only committed $S$ count; a retried $S$ never reached memory.
+
+Example: =[begin t0, set x 5 t0, end t0, begin t1, get x 5 t1, end t1]=
+— $T_1$ reads 5, the last committed writer before it is $T_0$ with 5. ✓
+
+*** PROVED Base case: $P([])$
+
+Vacuous: =witness []= has no transactions, and $\forall T \in \emptyset.\ \ldots = \mathit{true}$.
+
+*** PROVED Step, =begin t=
+
+Nothing commits and the finish order does not change, so $P$ carries over.
+
+Gap found while mechanizing: this silently uses that $t$ is *fresh*
+(no earlier event of $\tau$ carries tag $t$; $t =$ =nextTx=) and that event
+ids are unique. Without freshness, =begin t= could re-open an already
+committed $t$ and change that transaction. In Lean these come from the
+standalone lemmas =inv_bbt= (F) and =inv_ids= (Ids), not from $P$.
+Candidate clause: (F) "every tag in $\tau$ is below =nextTx=".
+
+*** OPEN Step, =get=, =set=
+
+$P$ only looks at committed transactions; the reader $t$ is live. We do not
+know yet whether $t$ will commit, so whatever we say must hold either way.
+
+*** OPEN Step, =end t= (commit)
+
+First real trouble expected: $t$ becomes committed, and all its earlier reads
+suddenly have to satisfy $P$. Something must have remembered what $t$ read.
+
+*** OPEN Step, =retry=, =kcasRetry=, =adm=
