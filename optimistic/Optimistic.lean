@@ -1,4 +1,4 @@
-import Optimistic.ExtConsistency
+import Optimistic.TopDown
 
 namespace Optimistic
 
@@ -33,8 +33,8 @@ theorem vis_ar {E₀ : ThreadMap} {τ : Trace} {C' : Config}
 -- The witness is `witness τ` (finish order); Int holds for every history of τ.
 theorem correctness {E₀ : ThreadMap} {τ : Trace} {C' : Config}
     (hrun : Run (initConfig E₀) τ C') : ∃ H, HistoryOf τ H ∧ H.Int ∧ H.Ext τ := by
-  have hH : HistoryOf τ (witness τ) :=
-    ⟨witness_h1 τ, witness_h2 hrun, witness_h3 hrun, witness_h4 hrun, witness_h5 hrun⟩
-  exact ⟨witness τ, hH, int_of_run hrun hH, extC_witness hrun, extU_witness hrun⟩
+  have hH : HistoryOf τ (witness τ) := witness_historyOf hrun
+  -- Ext_u is not started yet.
+  exact ⟨witness τ, hH, int_of_run hrun hH, extC_of_inv₁ (inv₁ hrun), sorry⟩
 
 end Optimistic

@@ -4,7 +4,7 @@
 * Purpose
 
 Rebuild the Ext proof top down, adding one invariant clause at a time, each
-time a step case fails. Lean side: =Optimistic/TopDown.lean=.
+time a step case fails. Lean side: =Optimistic/TopDown.lean= (definitions in =Optimistic/Statement.lean=).
 
 * Where we are (pin)
 
@@ -46,16 +46,17 @@ Example: =[begin t0, set x 5 t0, end t0, begin t1, get x 5 t1, end t1]=
 
 Vacuous: =witness []= has no transactions, and $\forall T \in \emptyset.\ \ldots = \mathit{true}$.
 
-*** PROVED Step, =begin t=
+*** OPEN Step, =begin t=
 
-Nothing commits and the finish order does not change, so $P$ carries over.
+Paper argument: nothing commits and the finish order does not change, so $P$
+carries over.
 
-Gap found while mechanizing: this silently uses that $t$ is *fresh*
-(no earlier event of $\tau$ carries tag $t$; $t =$ =nextTx=) and that event
-ids are unique. Without freshness, =begin t= could re-open an already
-committed $t$ and change that transaction. In Lean these come from the
-standalone lemmas =inv_bbt= (F) and =inv_ids= (Ids), not from $P$.
-Candidate clause: (F) "every tag in $\tau$ is below =nextTx=".
+Gap: this silently uses that $t$ is *fresh* (no earlier event of $\tau$
+carries tag $t$; $t =$ =nextTx=) and that event ids are unique. Without
+freshness, =begin t= could re-open an already committed $t$ and change that
+transaction. $P$ alone does not give this, so $\mathrm{Inv} := P$ does not
+survive =begin=. Candidate first clause: (F) "every tag in $\tau$ is below
+=nextTx=".
 
 *** OPEN Step, =get=, =set=
 

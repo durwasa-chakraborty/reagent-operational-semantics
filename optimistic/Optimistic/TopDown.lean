@@ -1,12 +1,8 @@
 /-
   Top-down rebuild of the Ext proof, one invariant clause at a time.
   Paper side: `optimistic/top-down-prompt.org`.
-
-  Assumed (taken as given, proved elsewhere):
-    HistoryOf(τ, witness τ)   -- HistoryOf.lean, witness_h1 … witness_h5
-    Int                       -- IntConsistency.lean, int_of_run
 -/
-import Optimistic.ExtConsistencyP
+import Optimistic.Statement
 
 namespace Optimistic
 
@@ -30,14 +26,12 @@ theorem inv₁ {E₀ : ThreadMap} {τ : Trace} {C : Config}
     obtain ⟨t, ⟨e, he, -⟩, -⟩ := hT
     cases he
   · -- step: P(τ) ∧ C --a--> C'  →  P(τ·a)
-    intro ls C ℓ C' hrun ih hstep
-    have hrun' : Run (initConfig E₀) (ls ++ [ℓ]) C' := hrun.snoc hstep
-    have hu := (inv_ids hrun').2
+    intro ls C ℓ C' _hrun ih hstep
     cases hstep with
     | ctx _ hh =>
       cases hh with
-      -- begin: nothing commits, finish order unchanged; needs the tag to be fresh
-      | begin _ _          => exact ext_begin hu ih (inv_bbt hrun).1
+      -- begin: nothing commits, finish order unchanged; needs the tag to be fresh (F)
+      | begin _ _          => sorry
       | getLog _ _ _       => sorry
       | getMem _ _ _ _     => sorry
       | setLog _ _ _       => sorry
